@@ -1,0 +1,41 @@
+### Variáveis
+@baseUrl = http://localhost:8080
+
+# @name healthCheck
+GET {{baseUrl}}/health
+
+###
+
+# @name inserirChave
+POST {{baseUrl}}/keys
+Content-Type: application/json
+
+{
+    "key": "product:1",
+    "value": "{\"name\": \"Laptop\", \"price\": 1200}"
+}
+
+###
+
+# @name buscarChave
+GET {{baseUrl}}/keys/product:1
+
+###
+
+# @name listarTodas
+GET {{baseUrl}}/keys
+
+###
+
+# @name deletarChave
+DELETE {{baseUrl}}/keys/user:1
+
+###
+
+# @name scanCompleto
+GET {{baseUrl}}/scan
+
+###
+
+# @name stats
+GET {{baseUrl}}/stats
