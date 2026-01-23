@@ -14,7 +14,7 @@ bincode = "1.3"
 
 # Checksum & Bloom Filter
 crc32fast = "1.3"
-bloomfilter = "0.13"
+bloomfilter = "3"
 
 # Error handling
 anyhow = "1.0"
@@ -31,10 +31,6 @@ memmap2 = "0.9"
 criterion = "0.5"
 tempfile = "3.8"
 rand = "0.8"
-
-[[bench]]
-name = "lsm_bench"
-harness = false
 
 [profile.release]
 opt-level = 3
