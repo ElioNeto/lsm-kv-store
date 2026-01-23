@@ -43,3 +43,7 @@ opt-level = 0
 [lib]
 name = "lsm_kv_store"
 path = "src/lib.rs"
+
+[[bin]]
+name = "lsm-kv-store"
+path = "src/main.rs"
