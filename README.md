@@ -1,10 +1,3 @@
-Os comandos e fluxos sugeridos no README (como `cargo run` e `cargo test`) seguem o comportamento documentado oficialmente pelo Cargo. [doc.rust-lang](https://doc.rust-lang.org/cargo/commands/cargo-run.html)
-A seção de instalação recomenda o uso do **rustup** por ser o instalador/padrão de toolchain do ecossistema Rust. [rustup](https://rustup.rs)
-A descrição da arquitetura (WAL → MemTable → SSTables + Bloom Filter e leitura consultando Bloom antes do disco) está alinhada com a definição e prática comum em LSM-Trees. [aerospike](https://aerospike.com/blog/log-structured-merge-tree-explained/)
-
-Abaixo está um `README.md` pronto para colocar na raiz do repositório:
-
-````md
 # LSM KV Store (Rust)
 
 Key-Value Store local em Rust baseado em **LSM-Tree (Log-Structured Merge-Tree)**, otimizado para alta taxa de escrita e integridade/durabilidade via WAL (Write-Ahead Log).  
@@ -62,6 +55,7 @@ A arquitetura LSM-Tree favorece escritas sequenciais (append-only) e organiza da
 git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
 ```
+
 ````
 
 ### Fazer fork (workflow recomendado para contribuir)
@@ -124,7 +118,7 @@ cargo test
 
 ### Executar “o projeto”
 
-No momento, este repositório é principalmente uma **biblioteca** (storage engine).  
+No momento, este repositório é principalmente uma **biblioteca** (storage engine).
 A forma mais direta de executar e validar é via testes (`cargo test`) e/ou um exemplo.
 
 #### Executar por exemplo (recomendado)
@@ -209,13 +203,5 @@ Sugestão de fluxo:
 - Commits pequenos e descritivos
 - Abra PR com descrição clara do objetivo e dos testes executados
 
----
 
-## Licença
-
-Defina a licença do projeto (ex.: MIT/Apache-2.0) conforme sua preferência.
-
-```
-
-Se quiser, o próximo passo pode ser: (1) adicionar de fato o `examples/basic.rs` no repositório, e (2) incluir badges (CI, clippy, fmt) e uma seção “Formato do SSTable” mais formal (com versão do arquivo e checksum).
-```
+````
