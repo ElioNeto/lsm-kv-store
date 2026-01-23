@@ -1,41 +1,447 @@
-### Variáveis
-@baseUrl = http://localhost:8080
+### ============================================================================
+### LSM-Tree Key-Value Store - REST API
+### Extensão: REST Client (VS Code)
+### ============================================================================
 
+### Variáveis globais
+@baseUrl = http://localhost:8080
+@contentType = application/json
+
+### ============================================================================
+### 1. HEALTHCHECK & STATUS
+### ============================================================================
+
+### Health Check
 # @name healthCheck
 GET {{baseUrl}}/health
 
 ###
 
-# @name inserirChave
+### Estatísticas do Engine
+# @name stats
+GET {{baseUrl}}/stats
+
+### ============================================================================
+### 2. OPERAÇÕES BÁSICAS (CRUD Único)
+### ============================================================================
+
+### Inserir chave simples
+# @name setKey1
 POST {{baseUrl}}/keys
-Content-Type: application/json
+Content-Type: {{contentType}}
 
 {
-    "key": "product:1",
-    "value": "{\"name\": \"Laptop\", \"price\": 1200}"
+    "key": "user:alice",
+    "value": "Alice Silva"
 }
 
 ###
 
-# @name buscarChave
-GET {{baseUrl}}/keys/product:1
+### Inserir produto
+# @name setProduct
+POST {{baseUrl}}/keys
+Content-Type: {{contentType}}
+
+{
+    "key": "product:laptop-001",
+    "value": "Dell Inspiron 15, 16GB RAM, 512GB SSD"
+}
 
 ###
 
-# @name listarTodas
+### Buscar chave específica
+# @name getKey
+GET {{baseUrl}}/keys/user:alice
+
+###
+
+### Buscar produto
+# @name getProduct
+GET {{baseUrl}}/keys/product:laptop-001
+
+###
+
+### Atualizar chave (sobrescrever)
+# @name updateKey
+POST {{baseUrl}}/keys
+Content-Type: {{contentType}}
+
+{
+    "key": "user:alice",
+    "value": "Alice Silva Santos (atualizado)"
+}
+
+###
+
+### Deletar chave
+# @name deleteKey
+DELETE {{baseUrl}}/keys/user:alice
+
+###
+
+### Verificar chave deletada
+# @name verifyDeleted
+GET {{baseUrl}}/keys/user:alice
+
+### ============================================================================
+### 3. OPERAÇÕES BATCH (Múltiplos registros)
+### ============================================================================
+
+### Inserir múltiplos usuários (BATCH INSERT)
+# @name batchInsertUsers
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "user:1", "value": "Alice Silva"},
+        {"key": "user:2", "value": "Bob Santos"},
+        {"key": "user:3", "value": "Charlie Costa"},
+        {"key": "user:4", "value": "Diana Oliveira"},
+        {"key": "user:5", "value": "Eduardo Lima"}
+    ]
+}
+
+###
+
+### Inserir múltiplos produtos (BATCH INSERT)
+# @name batchInsertProducts
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "product:100", "value": "Notebook Dell"},
+        {"key": "product:101", "value": "Mouse Logitech"},
+        {"key": "product:102", "value": "Teclado Mecânico"},
+        {"key": "product:103", "value": "Monitor LG 27\""},
+        {"key": "product:104", "value": "Webcam HD"}
+    ]
+}
+
+###
+
+### Inserir pedidos (BATCH INSERT)
+# @name batchInsertOrders
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "order:2024-001", "value": "Alice - Notebook - R$ 3500"},
+        {"key": "order:2024-002", "value": "Bob - Mouse - R$ 150"},
+        {"key": "order:2024-003", "value": "Charlie - Teclado - R$ 450"},
+        {"key": "order:2025-001", "value": "Diana - Monitor - R$ 1200"},
+        {"key": "order:2025-002", "value": "Eduardo - Webcam - R$ 300"}
+    ]
+}
+
+###
+
+### Deletar múltiplas chaves (BATCH DELETE)
+# @name batchDelete
+DELETE {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "keys": ["user:3", "user:5", "product:104"]
+}
+
+###
+
+### Deletar todos os pedidos de 2024 (preparar batch)
+# @name batchDeleteOrders2024
+DELETE {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "keys": ["order:2024-001", "order:2024-002", "order:2024-003"]
+}
+
+### ============================================================================
+### 4. BUSCA & LISTAGEM
+### ============================================================================
+
+### Listar todas as chaves
+# @name listAllKeys
 GET {{baseUrl}}/keys
 
 ###
 
-# @name deletarChave
-DELETE {{baseUrl}}/keys/user:1
-
-###
-
-# @name scanCompleto
+### Scan completo (chaves + valores)
+# @name scanAll
 GET {{baseUrl}}/scan
 
 ###
 
-# @name stats
+### Buscar por substring "user" (qualquer parte da chave)
+# @name searchUser
+GET {{baseUrl}}/keys/search?q=user
+
+###
+
+### Buscar por substring "product"
+# @name searchProduct
+GET {{baseUrl}}/keys/search?q=product
+
+###
+
+### Buscar por prefixo "user:" (início da chave)
+# @name searchPrefixUser
+GET {{baseUrl}}/keys/search?q=user:&prefix=true
+
+###
+
+### Buscar por prefixo "product:"
+# @name searchPrefixProduct
+GET {{baseUrl}}/keys/search?q=product:&prefix=true
+
+###
+
+### Buscar por prefixo "order:2024"
+# @name searchPrefix2024Orders
+GET {{baseUrl}}/keys/search?q=order:2024&prefix=true
+
+###
+
+### Buscar por prefixo "order:2025"
+# @name searchPrefix2025Orders
+GET {{baseUrl}}/keys/search?q=order:2025&prefix=true
+
+### ============================================================================
+### 5. TESTES DE CARGA & PERFORMANCE
+### ============================================================================
+
+### Inserir 100 registros em batch (teste de carga)
+# @name loadTest100
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "test:001", "value": "Test value 001"},
+        {"key": "test:002", "value": "Test value 002"},
+        {"key": "test:003", "value": "Test value 003"},
+        {"key": "test:004", "value": "Test value 004"},
+        {"key": "test:005", "value": "Test value 005"},
+        {"key": "test:006", "value": "Test value 006"},
+        {"key": "test:007", "value": "Test value 007"},
+        {"key": "test:008", "value": "Test value 008"},
+        {"key": "test:009", "value": "Test value 009"},
+        {"key": "test:010", "value": "Test value 010"}
+    ]
+}
+
+###
+
+### Buscar todos os testes
+# @name searchAllTests
+GET {{baseUrl}}/keys/search?q=sensor:&prefix=true
+
+###
+
+### Limpar registros de teste
+# @name cleanupTests
+DELETE {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "keys": [
+        "test:001", "test:002", "test:003", "test:004", "test:005",
+        "test:006", "test:007", "test:008", "test:009", "test:010"
+    ]
+}
+
+### ============================================================================
+### 6. CENÁRIOS PRÁTICOS
+### ============================================================================
+
+### Cenário 1: E-commerce - Cadastro de produtos
+# @name ecommerce_products
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "catalog:electronics:laptop-dell-i5", "value": "{\"name\":\"Dell Inspiron i5\",\"price\":3200,\"stock\":15}"},
+        {"key": "catalog:electronics:laptop-hp-i7", "value": "{\"name\":\"HP Pavilion i7\",\"price\":4500,\"stock\":8}"},
+        {"key": "catalog:electronics:mouse-logitech", "value": "{\"name\":\"Logitech MX Master\",\"price\":350,\"stock\":50}"},
+        {"key": "catalog:books:clean-code", "value": "{\"name\":\"Clean Code\",\"author\":\"Robert Martin\",\"price\":85}"},
+        {"key": "catalog:books:design-patterns", "value": "{\"name\":\"Design Patterns\",\"author\":\"Gang of Four\",\"price\":120}"}
+    ]
+}
+
+###
+
+### Buscar todos os eletrônicos
+# @name search_electronics
+GET {{baseUrl}}/keys/search?q=catalog:electronics:&prefix=true
+
+###
+
+### Buscar todos os livros
+# @name search_books
+GET {{baseUrl}}/keys/search?q=catalog:books:&prefix=true
+
+###
+
+### Cenário 2: Sistema de cache - Sessões de usuário
+# @name cache_sessions
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+        {"key": "session:abc123", "value": "{\"user_id\":1,\"email\":\"alice@example.com\",\"expires\":1706100000}"},
+        {"key": "session:def456", "value": "{\"user_id\":2,\"email\":\"bob@example.com\",\"expires\":1706110000}"},
+        {"key": "session:ghi789", "value": "{\"user_id\":3,\"email\":\"charlie@example.com\",\"expires\":1706120000}"}
+    ]
+}
+
+###
+
+### Buscar todas as sessões ativas
+# @name search_sessions
+GET {{baseUrl}}/keys/search?q=session:&prefix=true
+
+###
+
+### Expirar sessões (deletar)
+# @name expire_sessions
+DELETE {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "keys": ["session:abc123", "session:def456"]
+}
+
+###
+
+### Verificar sessões restantes
+# @name check_remaining_sessions
+GET {{baseUrl}}/keys/search?q=session:&prefix=true
+
+### ============================================================================
+### 7. CLEANUP GERAL
+### ============================================================================
+
+### Ver estatísticas antes da limpeza
+# @name stats_before_cleanup
 GET {{baseUrl}}/stats
+
+###
+
+### Listar todas as chaves para review
+# @name list_all_before_cleanup
+GET {{baseUrl}}/keys
+
+###
+
+### ATENÇÃO: Deletar todos os registros de teste
+### (Ajuste as chaves conforme necessário)
+# @name cleanup_all
+DELETE {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "keys": [
+        "user:1", "user:2", "user:4",
+        "product:100", "product:101", "product:102", "product:103",
+        "order:2025-001", "order:2025-002",
+        "catalog:electronics:laptop-dell-i5",
+        "catalog:electronics:laptop-hp-i7",
+        "catalog:electronics:mouse-logitech",
+        "catalog:books:clean-code",
+        "catalog:books:design-patterns",
+        "session:ghi789"
+    ]
+}
+
+###
+
+### Ver estatísticas após limpeza
+# @name stats_after_cleanup
+GET {{baseUrl}}/stats
+
+###
+
+### Verificar banco vazio
+# @name verify_empty
+GET {{baseUrl}}/scan
+
+
+### ============================================================================
+### 6. CENÁRIOS CARGA & PERFORMANCE
+### ============================================================================
+
+# @name Carga
+POST {{baseUrl}}/keys/batch
+Content-Type: {{contentType}}
+
+{
+    "records": [
+  // --- USUÁRIOS (70 registros) ---
+  {"key": "user:6", "value": "Fabio Vieira"}, {"key": "user:7", "value": "Gabriel Souza"}, {"key": "user:8", "value": "Helena Matos"}, {"key": "user:9", "value": "Isabela Rocha"}, {"key": "user:10", "value": "João Pereira"},
+  {"key": "user:11", "value": "Karina Mendes"}, {"key": "user:12", "value": "Lucas Fernandes"}, {"key": "user:13", "value": "Marina Silva"}, {"key": "user:14", "value": "Natan Costa"}, {"key": "user:15", "value": "Olívia Gomes"},
+  {"key": "user:16", "value": "Paulo Ricardo"}, {"key": "user:17", "value": "Quênia Lopes"}, {"key": "user:18", "value": "Rafael Alves"}, {"key": "user:19", "value": "Sara Monte"}, {"key": "user:20", "value": "Tiago Luz"},
+  {"key": "user:21", "value": "Ursula Bezerra"}, {"key": "user:22", "value": "Vitor Hugo"}, {"key": "user:23", "value": "Wagner Moura"}, {"key": "user:24", "value": "Xavier Neto"}, {"key": "user:25", "value": "Yara Flor"},
+  {"key": "user:26", "value": "Zeca Pagode"}, {"key": "user:27", "value": "Ana Clara"}, {"key": "user:28", "value": "Bruno Henrique"}, {"key": "user:29", "value": "Caio Castro"}, {"key": "user:30", "value": "Daniela Mercury"},
+  {"key": "user:31", "value": "Elaine Santos"}, {"key": "user:32", "value": "Fernando Pessoa"}, {"key": "user:33", "value": "Gisele Bündchen"}, {"key": "user:34", "value": "Heitor Villa"}, {"key": "user:35", "value": "Igor Kanário"},
+  {"key": "user:36", "value": "Júlia Roberts"}, {"key": "user:37", "value": "Kléber Glad"}, {"key": "user:38", "value": "Leandro Karnal"}, {"key": "user:39", "value": "Marta Vieira"}, {"key": "user:40", "value": "Nelson Motta"},
+  {"key": "user:41", "value": "Otávio Mesquita"}, {"key": "user:42", "value": "Priscila Fantin"}, {"key": "user:43", "value": "Queiroz Galvão"}, {"key": "user:44", "value": "Renato Aragão"}, {"key": "user:45", "value": "Sônia Abrão"},
+  {"key": "user:46", "value": "Tadeu Schmidt"}, {"key": "user:47", "value": "Ulysses Guimarães"}, {"key": "user:48", "value": "Valéria Almeida"}, {"key": "user:49", "value": "Wilson Simonal"}, {"key": "user:50", "value": "Xuxa Meneghel"},
+  {"key": "user:51", "value": "Yuri Gagarin"}, {"key": "user:52", "value": "Zico Galo"}, {"key": "user:53", "value": "Amanda Nunes"}, {"key": "user:54", "value": "Beto Carrero"}, {"key": "user:55", "value": "Ciro Gomes"},
+  {"key": "user:56", "value": "Dadá Maravilha"}, {"key": "user:57", "value": "Eder Jofre"}, {"key": "user:58", "value": "Fafá de Belém"}, {"key": "user:59", "value": "Gal Costa"}, {"key": "user:60", "value": "Huguinho Silva"},
+  {"key": "user:61", "value": "Ivan Lins"}, {"key": "user:62", "value": "Jorge Ben"}, {"key": "user:63", "value": "Kátia Cega"}, {"key": "user:64", "value": "Lulu Santos"}, {"key": "user:65", "value": "Milton Nascimento"},
+  {"key": "user:66", "value": "Ney Matogrosso"}, {"key": "user:67", "value": "Oscar Niemeyer"}, {"key": "user:68", "value": "Pixinguinha Silva"}, {"key": "user:69", "value": "Quico Bola"}, {"key": "user:70", "value": "Raul Seixas"},
+  {"key": "user:71", "value": "Sandra de Sá"}, {"key": "user:72", "value": "Tiririca Oliveira"}, {"key": "user:73", "value": "Ubirajara Indio"}, {"key": "user:74", "value": "Vampeta Veloso"}, {"key": "user:75", "value": "Zumbi Palmares"},
+
+  // --- PRODUTOS (65 registros) ---
+  {"key": "product:105", "value": "Smartphone Samsung S23"}, {"key": "product:106", "value": "iPhone 15 Pro"}, {"key": "product:107", "value": "Carregador Portátil"}, {"key": "product:108", "value": "Cabo USB-C 2m"}, {"key": "product:109", "value": "Fone Bluetooth JBL"},
+  {"key": "product:110", "value": "Mouse Pad Gamer"}, {"key": "product:111", "value": "Suporte Articulado"}, {"key": "product:112", "value": "Cadeira Ergonômica"}, {"key": "product:113", "value": "Mesa de Escritório"}, {"key": "product:114", "value": "Luminária LED"},
+  {"key": "product:115", "value": "HD Externo 1TB"}, {"key": "product:116", "value": "SSD 500GB NVMe"}, {"key": "product:117", "value": "Memória RAM 16GB"}, {"key": "product:118", "value": "Placa de Vídeo RTX"}, {"key": "product:119", "value": "Processador Intel i7"},
+  {"key": "product:120", "value": "Cooler Master"}, {"key": "product:121", "value": "Gabinete ATX"}, {"key": "product:122", "value": "Fonte 600W 80 Plus"}, {"key": "product:123", "value": "Roteador Wi-Fi 6"}, {"key": "product:124", "value": "Repetidor de Sinal"},
+  {"key": "product:125", "value": "Kindle Paperwhite"}, {"key": "product:126", "value": "Tablet iPad Air"}, {"key": "product:127", "value": "Smartwatch Series 9"}, {"key": "product:128", "value": "Caixa de Som Echo Dot"}, {"key": "product:129", "value": "Fire TV Stick 4K"},
+  {"key": "product:130", "value": "Microfone Condensador"}, {"key": "product:131", "value": "Interface de Áudio"}, {"key": "product:132", "value": "Controladora DJ"}, {"key": "product:133", "value": "Pedal de Guitarra"}, {"key": "product:134", "value": "Violão Elétrico"},
+  {"key": "product:135", "value": "Bateria Eletrônica"}, {"key": "product:136", "value": "Câmera Canon EOS"}, {"key": "product:137", "value": "Lente 50mm f1.8"}, {"key": "product:138", "value": "Tripé Profissional"}, {"key": "product:139", "value": "Cartão SD 128GB"},
+  {"key": "product:140", "value": "Drone DJI Mini"}, {"key": "product:141", "value": "Impressora Laser"}, {"key": "product:142", "value": "Scanner de Mesa"}, {"key": "product:143", "value": "Projetor 4K"}, {"key": "product:144", "value": "Tela de Projeção"},
+  {"key": "product:145", "value": "Nobreak 1200VA"}, {"key": "product:146", "value": "Filtro de Linha"}, {"key": "product:147", "value": "Hub USB 3.0"}, {"key": "product:148", "value": "Adaptador HDMI"}, {"key": "product:149", "value": "Teclado Numérico"},
+  {"key": "product:150", "value": "Mochila para Laptop"}, {"key": "product:151", "value": "Pasta Executiva"}, {"key": "product:152", "value": "Caneta Digitalizadora"}, {"key": "product:153", "value": "Mesa Digitalizadora"}, {"key": "product:154", "value": "Calculadora HP 12C"},
+  {"key": "product:155", "value": "Fragmentadora de Papel"}, {"key": "product:156", "value": "Gaveteiro de Aço"}, {"key": "product:157", "value": "Quadro Branco"}, {"key": "product:158", "value": "Organizador de Cabos"}, {"key": "product:159", "value": "Pilha Recarregável"},
+  {"key": "product:160", "value": "Multímetro Digital"}, {"key": "product:161", "value": "Ferro de Solda"}, {"key": "product:162", "value": "Parafusadeira Bosch"}, {"key": "product:163", "value": "Jogo de Chaves"}, {"key": "product:164", "value": "Maleta de Ferramentas"},
+  {"key": "product:165", "value": "Ar Condicionado 12kBTU"}, {"key": "product:166", "value": "Ventilador de Torre"}, {"key": "product:167", "value": "Umidificador de Ar"}, {"key": "product:168", "value": "Purificador de Água"}, {"key": "product:169", "value": "Cafeteira Nespresso"},
+
+  // --- PEDIDOS (65 registros) ---
+  {"key": "order:2025-003", "value": "Fabio - Smartphone - R$ 4200"}, {"key": "order:2025-004", "value": "Gabriel - iPhone - R$ 7500"}, {"key": "order:2025-005", "value": "Helena - Carregador - R$ 120"}, {"key": "order:2025-006", "value": "Isabela - Cabo USB - R$ 50"}, {"key": "order:2025-007", "value": "João - Fone JBL - R$ 350"},
+  {"key": "order:2025-008", "value": "Karina - Mouse Pad - R$ 80"}, {"key": "order:2025-009", "value": "Lucas - Suporte - R$ 150"}, {"key": "order:2025-010", "value": "Marina - Cadeira - R$ 1200"}, {"key": "order:2025-011", "value": "Natan - Mesa - R$ 850"}, {"key": "order:2025-012", "value": "Olívia - Luminária - R$ 90"},
+  {"key": "order:2025-013", "value": "Paulo - HD Externo - R$ 400"}, {"key": "order:2025-014", "value": "Quênia - SSD - R$ 300"}, {"key": "order:2025-015", "value": "Rafael - Memória RAM - R$ 450"}, {"key": "order:2025-016", "value": "Sara - Placa Vídeo - R$ 2800"}, {"key": "order:2025-017", "value": "Tiago - Processador - R$ 1500"},
+  {"key": "order:2025-018", "value": "Ursula - Cooler - R$ 200"}, {"key": "order:2025-019", "value": "Vitor - Gabinete - R$ 350"}, {"key": "order:2025-020", "value": "Wagner - Fonte - R$ 450"}, {"key": "order:2025-021", "value": "Xavier - Roteador - R$ 600"}, {"key": "order:2025-022", "value": "Yara - Repetidor - R$ 150"},
+  {"key": "order:2025-023", "value": "Zeca - Kindle - R$ 500"}, {"key": "order:2025-024", "value": "Ana - Tablet - R$ 3200"}, {"key": "order:2025-025", "value": "Bruno - Smartwatch - R$ 2100"}, {"key": "order:2025-026", "value": "Caio - Echo Dot - R$ 350"}, {"key": "order:2025-027", "value": "Daniela - Fire TV - R$ 280"},
+  {"key": "order:2025-028", "value": "Elaine - Microfone - R$ 900"}, {"key": "order:2025-029", "value": "Fernando - Interface - R$ 1200"}, {"key": "order:2025-030", "value": "Gisele - Controladora - R$ 2500"}, {"key": "order:2025-031", "value": "Heitor - Pedal - R$ 600"}, {"key": "order:2025-032", "value": "Igor - Violão - R$ 1800"},
+  {"key": "order:2025-033", "value": "Júlia - Bateria - R$ 4500"}, {"key": "order:2025-034", "value": "Kléber - Câmera - R$ 6000"}, {"key": "order:2025-035", "value": "Leandro - Lente - R$ 1100"}, {"key": "order:2025-036", "value": "Marta - Tripé - R$ 400"}, {"key": "order:2025-037", "value": "Nelson - Cartão SD - R$ 180"},
+  {"key": "order:2025-038", "value": "Otávio - Drone - R$ 3800"}, {"key": "order:2025-039", "value": "Priscila - Impressora - R$ 1200"}, {"key": "order:2025-040", "value": "Queiroz - Scanner - R$ 700"}, {"key": "order:2025-041", "value": "Renato - Projetor - R$ 2500"}, {"key": "order:2025-042", "value": "Sônia - Tela - R$ 600"},
+  {"key": "order:2025-043", "value": "Tadeu - Nobreak - R$ 950"}, {"key": "order:2025-044", "value": "Ulysses - Filtro - R$ 70"}, {"key": "order:2025-045", "value": "Valéria - Hub USB - R$ 120"}, {"key": "order:2025-046", "value": "Wilson - Adaptador - R$ 50"}, {"key": "order:2025-047", "value": "Xuxa - Teclado Num - R$ 90"},
+  {"key": "order:2025-048", "value": "Yuri - Mochila - R$ 250"}, {"key": "order:2025-049", "value": "Zico - Pasta - R$ 180"}, {"key": "order:2025-050", "value": "Amanda - Caneta Dig - R$ 400"}, {"key": "order:2025-051", "value": "Beto - Mesa Dig - R$ 1500"}, {"key": "order:2025-052", "value": "Ciro - Calculadora - R$ 600"},
+  {"key": "order:2025-053", "value": "Dadá - Fragmentadora - R$ 450"}, {"key": "order:2025-054", "value": "Eder - Gaveteiro - R$ 300"}, {"key": "order:2025-055", "value": "Fafá - Quadro - R$ 150"}, {"key": "order:2025-056", "value": "Gal - Organizador - R$ 40"}, {"key": "order:2025-057", "value": "Huguinho - Pilha - R$ 80"},
+  {"key": "order:2025-058", "value": "Ivan - Multímetro - R$ 120"}, {"key": "order:2025-059", "value": "Jorge - Ferro Solda - R$ 60"}, {"key": "order:2025-060", "value": "Kátia - Parafusadeira - R$ 350"}, {"key": "order:2025-061", "value": "Lulu - Jogo Chaves - R$ 200"}, {"key": "order:2025-062", "value": "Milton - Maleta - R$ 400"},
+  {"key": "order:2025-063", "value": "Ney - Ar Cond - R$ 2200"}, {"key": "order:2025-064", "value": "Oscar - Ventilador - R$ 250"}, {"key": "order:2025-065", "value": "Pixinguinha - Umidificador - R$ 180"}, {"key": "order:2025-066", "value": "Quico - Purificador - R$ 600"}, {"key": "order:2025-067", "value": "Raul - Cafeteira - R$ 450"}
+
+    ]
+}
+
+###
+# @name cargo_test_stats
+GET {{baseUrl}}/stats
+
+###
+
+### Verificar banco vazio
+# @name cargo_test_scan
+GET {{baseUrl}}/scan
+
+### demora cerca de 172500 ms. Dependendo da máquina, pode variar. Adiciona 6600 registros ao banco.
+#
+POST {{baseUrl}}/keys/batch
+Content-Type: application/json
+
+< ../examples/stress_test_data.json

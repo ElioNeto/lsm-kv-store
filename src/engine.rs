@@ -28,10 +28,49 @@ pub struct LsmEngine {
     pub(crate) wal: WriteAheadLog,
     pub(crate) sstables: Mutex<Vec<SStable>>,
     pub(crate) dir_path: PathBuf,
-    pub(crate) config: LsmConfig,
 }
 
 impl LsmEngine {
+    pub fn search(&self, pattern: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let all_data = self.scan()?;
+
+        Ok(all_data
+            .into_iter()
+            .filter(|(key, _)| key.contains(pattern))
+            .collect())
+    }
+
+    pub fn set_batch(&self, items: Vec<(String, Vec<u8>)>) -> Result<usize> {
+        let mut count = 0;
+
+        for (key, value) in items {
+            self.set(key, value)?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    pub fn delete_batch(&self, keys: Vec<String>) -> Result<usize> {
+        let mut count = 0;
+
+        for key in keys {
+            self.delete(key)?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    pub fn search_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let all_data = self.scan()?;
+
+        Ok(all_data
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .collect())
+    }
+
     pub fn new(config: LsmConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir)?;
 
@@ -67,7 +106,6 @@ impl LsmEngine {
             wal,
             sstables: Mutex::new(sstables),
             dir_path: config.data_dir.clone(),
-            config,
         })
     }
 
@@ -163,13 +201,6 @@ impl LsmEngine {
         )
     }
 
-    /// Retorna todos os pares chave-valor do banco
-    ///
-    /// # Ordem de precedência:
-    /// 1. MemTable (mais recente)
-    /// 2. SSTables (da mais recente para mais antiga)
-    ///
-    /// Tombstones (is_deleted=true) são filtrados
     pub fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let mut result_map: HashMap<String, (Vec<u8>, u128, bool)> = HashMap::new();
 
@@ -218,7 +249,6 @@ impl LsmEngine {
         Ok(results)
     }
 
-    /// Lê todos os registros de uma SSTable específica
     fn read_all_from_sstable(&self, sst: &SStable) -> Result<Vec<LogRecord>> {
         use bincode::deserialize;
         use std::fs::File;
@@ -253,13 +283,11 @@ impl LsmEngine {
         Ok(records)
     }
 
-    /// Retorna apenas as chaves (sem valores)
     pub fn keys(&self) -> Result<Vec<String>> {
         let all_data = self.scan()?;
         Ok(all_data.into_iter().map(|(k, _)| k).collect())
     }
 
-    /// Conta o número total de chaves ativas (excluindo tombstones)
     pub fn count(&self) -> Result<usize> {
         Ok(self.scan()?.len())
     }

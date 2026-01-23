@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::engine::LsmEngine;
 
-/// Estado compartilhado entre threads (Actix usa multi-thread)
+/// Estado compartilhado entre threads
 pub struct AppState {
     pub engine: Arc<LsmEngine>,
 }
@@ -14,7 +14,27 @@ pub struct AppState {
 #[derive(Deserialize)]
 pub struct SetRequest {
     pub key: String,
-    pub value: String, // JSON aceita string; convertemos para bytes
+    pub value: String,
+}
+
+/// Request body para SET BATCH
+#[derive(Deserialize)]
+pub struct BatchSetRequest {
+    pub records: Vec<SetRequest>,
+}
+
+/// Request body para DELETE BATCH
+#[derive(Deserialize)]
+pub struct BatchDeleteRequest {
+    pub keys: Vec<String>,
+}
+
+/// Query params para busca
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String, // query string (substring)
+    #[serde(default)]
+    pub prefix: bool, // se true, busca por prefixo; se false, substring
 }
 
 /// Response padrão
@@ -96,6 +116,29 @@ async fn set_key(req: web::Json<SetRequest>, data: web::Data<AppState>) -> impl 
     }
 }
 
+/// POST /keys/batch - Inserir múltiplas chaves
+#[post("/keys/batch")]
+async fn set_batch(req: web::Json<BatchSetRequest>, data: web::Data<AppState>) -> impl Responder {
+    let records: Vec<(String, Vec<u8>)> = req
+        .records
+        .iter()
+        .map(|r| (r.key.clone(), r.value.as_bytes().to_vec()))
+        .collect();
+
+    match data.engine.set_batch(records) {
+        Ok(count) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("{} keys inserted successfully", count),
+            data: Some(serde_json::json!({ "count": count })),
+        }),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
+            success: false,
+            message: format!("Error: {}", e),
+            data: None,
+        }),
+    }
+}
+
 /// DELETE /keys/{key} - Deletar chave
 #[delete("/keys/{key}")]
 async fn delete_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
@@ -115,6 +158,26 @@ async fn delete_key(path: web::Path<String>, data: web::Data<AppState>) -> impl 
     }
 }
 
+/// DELETE /keys/batch - Deletar múltiplas chaves
+#[delete("/keys/batch")]
+async fn delete_batch(
+    req: web::Json<BatchDeleteRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    match data.engine.delete_batch(req.keys.clone()) {
+        Ok(count) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("{} keys deleted successfully", count),
+            data: Some(serde_json::json!({ "count": count })),
+        }),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
+            success: false,
+            message: format!("Error: {}", e),
+            data: None,
+        }),
+    }
+}
+
 /// GET /keys - Listar todas as chaves
 #[get("/keys")]
 async fn list_keys(data: web::Data<AppState>) -> impl Responder {
@@ -124,6 +187,41 @@ async fn list_keys(data: web::Data<AppState>) -> impl Responder {
             message: format!("{} keys found", keys.len()),
             data: Some(serde_json::json!({ "keys": keys })),
         }),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
+            success: false,
+            message: format!("Error: {}", e),
+            data: None,
+        }),
+    }
+}
+
+/// GET /keys/search?q=pattern&prefix=false - Buscar por substring/prefixo
+#[get("/keys/search")]
+async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) -> impl Responder {
+    let results = if query.prefix {
+        data.engine.search_prefix(&query.q)
+    } else {
+        data.engine.search(&query.q)
+    };
+
+    match results {
+        Ok(records) => {
+            let records_json: Vec<serde_json::Value> = records
+                .into_iter()
+                .map(|(k, v)| {
+                    serde_json::json!({
+                        "key": k,
+                        "value": String::from_utf8_lossy(&v).to_string()
+                    })
+                })
+                .collect();
+
+            HttpResponse::Ok().json(ApiResponse {
+                success: true,
+                message: format!("{} keys found matching '{}'", records_json.len(), query.q),
+                data: Some(serde_json::json!({ "records": records_json })),
+            })
+        }
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
             success: false,
             message: format!("Error: {}", e),
@@ -167,16 +265,18 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
 
     println!("🚀 LSM-Tree REST API iniciando em http://{}:{}", host, port);
     println!("📚 Documentação:");
-    println!("   GET  /health          - Healthcheck");
-    println!("   GET  /stats           - Estatísticas");
-    println!("   GET  /keys            - Listar todas as chaves");
-    println!("   GET  /keys/{{key}}      - Buscar valor");
-    println!("   POST /keys            - Inserir/atualizar (JSON body)");
-    println!("   DELETE /keys/{{key}}    - Deletar chave");
-    println!("   GET  /scan            - Retornar todos os dados\n");
+    println!("   GET    /health               - Healthcheck");
+    println!("   GET    /stats                - Estatísticas");
+    println!("   GET    /keys                 - Listar todas as chaves");
+    println!("   GET    /keys/{{key}}           - Buscar valor");
+    println!("   GET    /keys/search?q=...    - Buscar por substring/prefixo");
+    println!("   POST   /keys                 - Inserir/atualizar (JSON body)");
+    println!("   POST   /keys/batch           - Inserir múltiplos (JSON array)");
+    println!("   DELETE /keys/{{key}}           - Deletar chave");
+    println!("   DELETE /keys/batch           - Deletar múltiplas (JSON array)");
+    println!("   GET    /scan                 - Retornar todos os dados\n");
 
     HttpServer::new(move || {
-        // CORS para permitir requisições do frontend
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
@@ -188,11 +288,15 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
             .app_data(web::Data::new(AppState {
                 engine: Arc::clone(&engine),
             }))
+            .app_data(web::JsonConfig::default().limit(20 * 1024 * 1024)) // Limite de 20MB
             .service(health)
             .service(get_stats)
+            .service(search_keys) // IMPORTANTE: antes de get_key
             .service(get_key)
             .service(set_key)
+            .service(set_batch)
             .service(delete_key)
+            .service(delete_batch)
             .service(list_keys)
             .service(scan_all)
     })

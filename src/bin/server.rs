@@ -9,14 +9,26 @@ async fn main() -> std::io::Result<()> {
         .with_level(true)
         .init();
 
+    println!("╔═══════════════════════════════════════════════════════╗");
+    println!("║        LSM-Tree REST API Server                       ║");
+    println!("╚═══════════════════════════════════════════════════════╝\n");
+
     // Configurar engine
     let config = LsmConfig {
         memtable_max_size: 4 * 1024 * 1024, // 4MB
         data_dir: PathBuf::from("./.lsm_data"),
     };
 
-    let engine = LsmEngine::new(config)
-        .expect("Failed to initialize LSM Engine");
+    // Mostrar caminho absoluto do diretório de dados
+    match config.data_dir.canonicalize() {
+        Ok(abs_path) => println!("📂 Diretório de dados: {}\n", abs_path.display()),
+        Err(_) => println!(
+            "📂 Diretório de dados: {} (será criado)\n",
+            config.data_dir.display()
+        ),
+    }
+
+    let engine = LsmEngine::new(config).expect("Failed to initialize LSM Engine");
 
     // Iniciar servidor HTTP
     lsm_kv_store::api::start_server(engine, "127.0.0.1", 8080).await
