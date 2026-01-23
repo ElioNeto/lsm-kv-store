@@ -56,8 +56,6 @@ git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
 ```
 
-````
-
 ### Fazer fork (workflow recomendado para contribuir)
 
 1. Clique em **Fork** no GitHub.
@@ -203,5 +201,6 @@ Sugestão de fluxo:
 - Commits pequenos e descritivos
 - Abra PR com descrição clara do objetivo e dos testes executados
 
+```
 
-````
+```
