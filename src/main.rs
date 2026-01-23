@@ -152,6 +152,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Prefix procurado: '{}'", prefix);
             }
 
+            "ALL" => {
+                println!("Listando todos os registros...\n");
+                match engine.scan() {
+                    Ok(records) => {
+                        if records.is_empty() {
+                            println!("⚠ Banco de dados vazio");
+                        } else {
+                            println!("┌─────────────────────────────────────────────────┐");
+                            println!("│  Chave                │  Valor                 │");
+                            println!("├─────────────────────────────────────────────────┤");
+
+                            for (key, value) in records {
+                                let value_str = String::from_utf8_lossy(&value);
+                                let key_display = if key.len() > 20 {
+                                    format!("{}...", &key[..17])
+                                } else {
+                                    key
+                                };
+                                let value_display = if value_str.len() > 20 {
+                                    format!("{}...", &value_str[..17])
+                                } else {
+                                    value_str.to_string()
+                                };
+                                println!("│  {:<20} │  {:<20} │", key_display, value_display);
+                            }
+
+                            println!("└─────────────────────────────────────────────────┘");
+                        }
+                    }
+                    Err(e) => println!("❌ Erro ao escanear: {}", e),
+                }
+            }
+
+            "KEYS" => match engine.keys() {
+                Ok(keys) => {
+                    if keys.is_empty() {
+                        println!("⚠ Nenhuma chave encontrada");
+                    } else {
+                        println!("Total de chaves: {}\n", keys.len());
+                        for (i, key) in keys.iter().enumerate() {
+                            println!("  {}. {}", i + 1, key);
+                        }
+                    }
+                }
+                Err(e) => println!("❌ Erro: {}", e),
+            },
+
+            "COUNT" => match engine.count() {
+                Ok(count) => println!("✓ Total de registros ativos: {}", count),
+                Err(e) => println!("❌ Erro: {}", e),
+            },
+
             _ => {
                 println!("❌ Comando desconhecido: '{}'", command);
                 println!("   Digite HELP para ver comandos disponíveis");
@@ -167,6 +219,10 @@ fn print_help() {
     println!("  SET <key> <value>      - Insere ou atualiza um par chave-valor");
     println!("  GET <key>              - Recupera o valor de uma chave");
     println!("  DELETE <key>           - Remove uma chave (cria tombstone)");
+    println!("  SCAN <prefix>          - Lista todos os registros do banco com o prefixo");
+    println!("  ALL                    - Lista todos os registros do banco");
+    println!("  KEYS                   - Lista apenas as chaves");
+    println!("  COUNT                  - Conta registros ativos");
     println!("  STATS                  - Exibe estatísticas do engine");
     println!("  BATCH <count>          - Insere N registros de teste");
     println!("  DEMO                   - Executa demonstração de features");

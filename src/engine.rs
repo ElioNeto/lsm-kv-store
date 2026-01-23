@@ -3,6 +3,7 @@ use crate::log_record::LogRecord;
 use crate::memtable::MemTable;
 use crate::sstable::SStable;
 use crate::wal::WriteAheadLog;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -160,5 +161,106 @@ impl LsmEngine {
             memtable.size_bytes / 1024,
             sstables.len()
         )
+    }
+
+    /// Retorna todos os pares chave-valor do banco
+    ///
+    /// # Ordem de precedência:
+    /// 1. MemTable (mais recente)
+    /// 2. SSTables (da mais recente para mais antiga)
+    ///
+    /// Tombstones (is_deleted=true) são filtrados
+    pub fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut result_map: HashMap<String, (Vec<u8>, u128, bool)> = HashMap::new();
+
+        // 1. Coletar da MemTable (mais alta prioridade)
+        let memtable = self.memtable.lock().unwrap();
+        for (key, record) in memtable.iter_ordered() {
+            result_map.insert(
+                key.clone(),
+                (record.value.clone(), record.timestamp, record.is_deleted),
+            );
+        }
+        drop(memtable);
+
+        // 2. Coletar de SSTables (já ordenadas por timestamp decrescente)
+        let sstables = self.sstables.lock().unwrap();
+        for sst in sstables.iter() {
+            // Ler todos os registros da SSTable
+            let records = self.read_all_from_sstable(sst)?;
+
+            for record in records {
+                // Inserir apenas se a chave ainda não existir (mais recente já foi inserida)
+                result_map.entry(record.key.clone()).or_insert((
+                    record.value,
+                    record.timestamp,
+                    record.is_deleted,
+                ));
+            }
+        }
+        drop(sstables);
+
+        // 3. Filtrar tombstones e converter para Vec
+        let mut results: Vec<(String, Vec<u8>)> = result_map
+            .into_iter()
+            .filter_map(|(key, (value, _ts, is_deleted))| {
+                if !is_deleted {
+                    Some((key, value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 4. Ordenar alfabeticamente por chave
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Ok(results)
+    }
+
+    /// Lê todos os registros de uma SSTable específica
+    fn read_all_from_sstable(&self, sst: &SStable) -> Result<Vec<LogRecord>> {
+        use bincode::deserialize;
+        use std::fs::File;
+        use std::io::{BufReader, Read, Seek, SeekFrom};
+
+        let mut file = BufReader::new(File::open(&sst.path)?);
+        let mut len_buf = [0u8; 4];
+
+        // Pular Bloom Filter
+        file.read_exact(&mut len_buf)?;
+        let bloom_len = u32::from_le_bytes(len_buf) as usize;
+        file.seek(SeekFrom::Current(bloom_len as i64))?;
+
+        // Pular Metadata
+        file.read_exact(&mut len_buf)?;
+        let meta_len = u32::from_le_bytes(len_buf) as usize;
+        file.seek(SeekFrom::Current(meta_len as i64))?;
+
+        // Ler todos os registros
+        let mut records = Vec::new();
+        for _ in 0..sst.metadata.record_count {
+            file.read_exact(&mut len_buf)?;
+            let record_len = u32::from_le_bytes(len_buf) as usize;
+
+            let mut record_data = vec![0u8; record_len];
+            file.read_exact(&mut record_data)?;
+
+            let record: LogRecord = deserialize(&record_data)?;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+
+    /// Retorna apenas as chaves (sem valores)
+    pub fn keys(&self) -> Result<Vec<String>> {
+        let all_data = self.scan()?;
+        Ok(all_data.into_iter().map(|(k, _)| k).collect())
+    }
+
+    /// Conta o número total de chaves ativas (excluindo tombstones)
+    pub fn count(&self) -> Result<usize> {
+        Ok(self.scan()?.len())
     }
 }
