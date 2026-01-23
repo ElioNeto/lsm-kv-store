@@ -1,4 +1,4 @@
-# Roadmap atualizado — LSM KV Store (sem mudar o modelo de dados)
+# Roadmap atualizado — LSM KV Store
 
 Data: 2026-01-23
 
