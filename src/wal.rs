@@ -1,6 +1,6 @@
+use crate::codec::{decode, encode};
 use crate::error::{LsmError, Result};
 use crate::log_record::LogRecord;
-use bincode::{deserialize, serialize};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -30,7 +30,7 @@ impl WriteAheadLog {
     }
 
     pub fn write_record(&self, record: &LogRecord) -> Result<()> {
-        let serialized = serialize(record)?;
+        let serialized = encode(record)?;
         let length = serialized.len() as u32;
 
         let mut writer = self.file.lock().unwrap();
@@ -76,7 +76,7 @@ impl WriteAheadLog {
                 return Err(e.into());
             }
 
-            let record: LogRecord = deserialize(&buffer).map_err(|_| LsmError::WalCorruption)?;
+            let record: LogRecord = decode(&buffer).map_err(|_| LsmError::WalCorruption)?;
             records.push(record);
         }
 

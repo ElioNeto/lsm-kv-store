@@ -1,6 +1,7 @@
+use crate::codec::{decode, encode};
 use crate::error::{LsmError, Result};
 use crate::log_record::LogRecord;
-use bincode::{deserialize, serialize};
+use bincode::de;
 use bloomfilter::Bloom;
 use crc32fast;
 use serde::{Deserialize, Serialize};
@@ -48,7 +49,7 @@ fn validate_records_blob(blob: &[u8], expected_count: usize) -> Result<()> {
             .read_exact(&mut record_data)
             .map_err(|_| LsmError::InvalidSstable)?;
         // valida que o record é decodificável
-        let _: LogRecord = deserialize(&record_data).map_err(|_| LsmError::InvalidSstable)?;
+        let _: LogRecord = decode(&record_data).map_err(|_| LsmError::InvalidSstable)?;
     }
     // não pode sobrar “lixo” no fim
     if cursor.position() as usize != blob.len() {
@@ -89,7 +90,7 @@ impl SStable {
         // 2. Serializar records
         let mut records_blob = Vec::new();
         for (_key, record) in records.iter() {
-            let record_bytes = serialize(record)?;
+            let record_bytes = encode(record)?;
             let len = record_bytes.len() as u32;
             records_blob.extend_from_slice(&len.to_le_bytes());
             records_blob.extend_from_slice(&record_bytes);
@@ -104,7 +105,7 @@ impl SStable {
             record_count: records.len() as u32,
             checksum,
         };
-        let metadata_bytes = serialize(&metadata)?;
+        let metadata_bytes = encode(&metadata)?;
 
         // 4. Escrever no arquivo
         file.write_all(&(bloom_bytes.len() as u32).to_le_bytes())?;
@@ -153,7 +154,7 @@ impl SStable {
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         let mut meta_data = vec![0u8; meta_len];
         file.read_exact(&mut meta_data)?;
-        let metadata: SstableMetadata = deserialize(&meta_data)?;
+        let metadata: SstableMetadata = decode(&meta_data)?;
 
         // Ler o restante (records blob) e validar checksum/integridade
         let mut records_blob = Vec::new();
@@ -202,7 +203,7 @@ impl SStable {
 
             let mut record_data = vec![0u8; record_len];
             file.read_exact(&mut record_data)?;
-            let record: LogRecord = deserialize(&record_data)?;
+            let record: LogRecord = decode(&record_data)?;
             if record.key == key {
                 return Ok(Some(record));
             }

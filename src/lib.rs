@@ -1,3 +1,4 @@
+mod codec;
 mod engine;
 mod error;
 mod log_record;

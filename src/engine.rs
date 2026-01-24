@@ -211,7 +211,10 @@ impl LsmEngine {
         let mem_kb = memtable.size_bytes / 1024;
 
         let sst_files = sstables.len();
-        let sst_records_total: usize = sstables.iter().map(|s| s.metadata.record_count).sum();
+        let sst_records_total: u64 = sstables
+            .iter()
+            .map(|s| s.metadata.record_count as u64)
+            .sum();
 
         let sst_bytes_total: u64 = sstables
             .iter()
