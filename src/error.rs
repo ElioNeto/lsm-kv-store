@@ -14,6 +14,9 @@ pub enum LsmError {
     #[error("System time error: {0}")]
     Time(#[from] SystemTimeError),
 
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(&'static str),
+
     #[error("Key not found")]
     KeyNotFound,
 

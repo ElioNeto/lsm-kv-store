@@ -20,6 +20,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir: PathBuf::from("./.lsm_data"),
     };
 
+    // ADICIONAR ESTA LINHA:
+    println!(
+        "📂 Diretório de dados: {}",
+        config.data_dir.canonicalize()?.display()
+    );
+
     println!("Inicializando engine em: {}", config.data_dir.display());
     let engine = LsmEngine::new(config)?;
     println!("✓ Engine inicializado com sucesso!\n");
