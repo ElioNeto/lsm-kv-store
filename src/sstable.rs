@@ -9,6 +9,8 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+const SST_MAGIC: &[u8; 8] = b"LSMSST01";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SstableMetadata {
     pub timestamp: u128,
@@ -22,6 +24,37 @@ pub struct SStable {
     pub(crate) metadata: SstableMetadata,
     pub(crate) bloom_filter: Bloom<[u8]>,
     pub(crate) path: PathBuf,
+}
+
+fn read_and_check_magic<R: Read>(mut r: R) -> Result<()> {
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic)?;
+    if &magic != SST_MAGIC {
+        return Err(LsmError::InvalidSstable);
+    }
+    Ok(())
+}
+
+fn validate_records_blob(blob: &[u8], expected_count: usize) -> Result<()> {
+    let mut cursor = std::io::Cursor::new(blob);
+    let mut lenbuf = [0u8; 4];
+    for _ in 0..expected_count {
+        cursor
+            .read_exact(&mut lenbuf)
+            .map_err(|_| LsmError::InvalidSstable)?;
+        let record_len = u32::from_le_bytes(lenbuf) as usize;
+        let mut record_data = vec![0u8; record_len];
+        cursor
+            .read_exact(&mut record_data)
+            .map_err(|_| LsmError::InvalidSstable)?;
+        // valida que o record é decodificável
+        let _: LogRecord = deserialize(&record_data).map_err(|_| LsmError::InvalidSstable)?;
+    }
+    // não pode sobrar “lixo” no fim
+    if cursor.position() as usize != blob.len() {
+        return Err(LsmError::InvalidSstable);
+    }
+    Ok(())
 }
 
 impl SStable {
@@ -38,6 +71,9 @@ impl SStable {
 
         let path = dir_path.join(format!("{}.sst", timestamp));
         let mut file = BufWriter::new(File::create(&path)?);
+
+        // Header (magic/version)
+        file.write_all(SST_MAGIC)?;
 
         // 1. Criar Bloom Filter
         let mut bloom = Bloom::<[u8]>::new_for_fp_rate(records.len(), 0.01)
@@ -99,19 +135,36 @@ impl SStable {
 
     pub fn load(path: &Path) -> Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
+
+        // Validar Magic Number
+        read_and_check_magic(&mut file)?;
+
         let mut len_buf = [0u8; 4];
 
+        // Ler Bloom Filter
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         let mut bloom_data = vec![0u8; bloom_len];
         file.read_exact(&mut bloom_data)?;
         let bloom = Bloom::<[u8]>::from_bytes(bloom_data).map_err(|_| LsmError::InvalidSstable)?;
 
+        // Ler Metadados
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         let mut meta_data = vec![0u8; meta_len];
         file.read_exact(&mut meta_data)?;
         let metadata: SstableMetadata = deserialize(&meta_data)?;
+
+        // Ler o restante (records blob) e validar checksum/integridade
+        let mut records_blob = Vec::new();
+        file.read_to_end(&mut records_blob)?;
+
+        let actual_checksum = crc32fast::hash(&records_blob);
+        if actual_checksum != metadata.checksum {
+            return Err(LsmError::InvalidSstable);
+        }
+
+        validate_records_blob(&records_blob, metadata.record_count)?;
 
         Ok(Self {
             metadata,
@@ -126,16 +179,23 @@ impl SStable {
         }
 
         let mut file = BufReader::new(File::open(&self.path)?);
+
+        // Validar Magic Number antes da leitura
+        read_and_check_magic(&mut file)?;
+
         let mut len_buf = [0u8; 4];
 
+        // Pular Bloom Filter
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(bloom_len as i64))?;
 
+        // Pular Metadados
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(meta_len as i64))?;
 
+        // Buscar nos registros
         for _ in 0..self.metadata.record_count {
             file.read_exact(&mut len_buf)?;
             let record_len = u32::from_le_bytes(len_buf) as usize;

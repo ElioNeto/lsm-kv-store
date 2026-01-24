@@ -3,12 +3,14 @@ use crate::log_record::LogRecord;
 use crate::memtable::MemTable;
 use crate::sstable::SStable;
 use crate::wal::WriteAheadLog;
+// sstable.rs usa um header fixo "LSMSST01" (8 bytes)
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
+#[derive(Clone, Debug)]
 pub struct LsmConfig {
     pub memtable_max_size: usize,
     pub data_dir: PathBuf,
@@ -201,6 +203,39 @@ impl LsmEngine {
         )
     }
 
+    pub fn stats_all(&self) -> String {
+        let memtable = self.memtable.lock().unwrap();
+        let sstables = self.sstables.lock().unwrap();
+
+        let mem_records = memtable.data.len();
+        let mem_kb = memtable.size_bytes / 1024;
+
+        let sst_files = sstables.len();
+        let sst_records_total: usize = sstables.iter().map(|s| s.metadata.record_count).sum();
+
+        let sst_bytes_total: u64 = sstables
+            .iter()
+            .map(|s| std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0))
+            .sum();
+
+        let wal_bytes: u64 = std::fs::metadata(&self.wal.path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        format!(
+            "LSM Stats:\n\
+         MemTable: {} records, ~{} KB\n\
+         SSTables: {} files, {} records (raw), ~{} KB on disk\n\
+         WAL: ~{} KB",
+            mem_records,
+            mem_kb,
+            sst_files,
+            sst_records_total,
+            (sst_bytes_total / 1024),
+            (wal_bytes / 1024),
+        )
+    }
+
     pub fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let mut result_map: HashMap<String, (Vec<u8>, u128, bool)> = HashMap::new();
 
@@ -255,6 +290,10 @@ impl LsmEngine {
         use std::io::{BufReader, Read, Seek, SeekFrom};
 
         let mut file = BufReader::new(File::open(&sst.path)?);
+
+        // Pular magic/version (8 bytes)
+        file.seek(SeekFrom::Current(8))?;
+
         let mut len_buf = [0u8; 4];
 
         // Pular Bloom Filter

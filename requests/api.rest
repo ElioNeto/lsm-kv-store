@@ -434,6 +434,9 @@ Content-Type: {{contentType}}
 GET {{baseUrl}}/stats
 
 ###
+# @name cargo_test_stats
+GET {{baseUrl}}/stats/all
+###
 
 ### Verificar banco vazio
 # @name cargo_test_scan

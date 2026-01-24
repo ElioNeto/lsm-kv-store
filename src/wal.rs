@@ -3,7 +3,7 @@ use crate::log_record::LogRecord;
 use bincode::{deserialize, serialize};
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tracing::debug;
@@ -12,6 +12,8 @@ pub struct WriteAheadLog {
     pub(crate) file: Mutex<BufWriter<File>>,
     pub(crate) path: PathBuf,
 }
+
+const MAX_WAL_RECORD_BYTES: usize = 32 * 1024 * 1024; // 32MiB
 
 impl WriteAheadLog {
     pub fn new(dir_path: &std::path::Path) -> Result<Self> {
@@ -46,38 +48,57 @@ impl WriteAheadLog {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
 
-        let mut length_buf = [0u8; 4];
         loop {
-            match reader.read_exact(&mut length_buf) {
-                Ok(()) => {
-                    let length = u32::from_le_bytes(length_buf) as usize;
-                    let mut buffer = vec![0u8; length];
-                    reader.read_exact(&mut buffer)?;
-                    let record: LogRecord =
-                        deserialize(&buffer).map_err(|_| LsmError::WalCorruption)?;
-                    records.push(record);
-                }
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e.into()),
+            // 1) Detecta EOF limpo vs truncamento no header de tamanho
+            let buf = reader.fill_buf()?;
+            if buf.is_empty() {
+                break; // EOF limpo (boundary)
             }
+            if buf.len() < 4 {
+                return Err(LsmError::WalCorruption); // truncado no meio do length
+            }
+
+            // 2) Lê o tamanho do record (4 bytes)
+            let mut lengthbuf = [0u8; 4];
+            reader.read_exact(&mut lengthbuf)?;
+            let length = u32::from_le_bytes(lengthbuf) as usize;
+
+            if length == 0 || length > MAX_WAL_RECORD_BYTES {
+                return Err(LsmError::WalCorruption);
+            }
+
+            // 3) Lê payload; se truncar aqui, é corrupção
+            let mut buffer = vec![0u8; length];
+            if let Err(e) = reader.read_exact(&mut buffer) {
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    return Err(LsmError::WalCorruption);
+                }
+                return Err(e.into());
+            }
+
+            let record: LogRecord = deserialize(&buffer).map_err(|_| LsmError::WalCorruption)?;
+            records.push(record);
         }
+
         Ok(records)
     }
-
     pub fn clear(&self) -> Result<()> {
-        let new_file = OpenOptions::new()
+        let mut guard = self.file.lock().unwrap();
+        guard.flush()?;
+        guard.get_ref().sync_all()?;
+
+        let truncfile = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.path)?;
-        new_file.sync_all()?;
+        truncfile.sync_all()?;
 
-        let append_file = OpenOptions::new()
+        let appendfile = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        let mut guard = self.file.lock().unwrap();
-        *guard = BufWriter::new(append_file);
+        *guard = BufWriter::new(appendfile);
         Ok(())
     }
 }

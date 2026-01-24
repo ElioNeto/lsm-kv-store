@@ -67,6 +67,17 @@ async fn get_stats(data: web::Data<AppState>) -> impl Responder {
     })
 }
 
+/// GET /statsAll - Estatísticas do engine
+#[get("/stats/all")]
+async fn get_stats_all(data: web::Data<AppState>) -> impl Responder {
+    let stats = data.engine.stats_all();
+    HttpResponse::Ok().json(ApiResponse {
+        success: true,
+        message: "Stats retrieved".to_string(),
+        data: Some(serde_json::json!({ "stats": stats })),
+    })
+}
+
 /// GET /keys/{key} - Buscar valor por chave
 #[get("/keys/{key}")]
 async fn get_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
@@ -299,6 +310,7 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
             .service(delete_batch)
             .service(list_keys)
             .service(scan_all)
+            .service(get_stats_all)
     })
     .bind((host, port))?
     .run()

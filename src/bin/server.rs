@@ -1,4 +1,5 @@
 use lsm_kv_store::{LsmConfig, LsmEngine};
+use std::io;
 use std::path::PathBuf;
 
 #[actix_web::main]
@@ -28,7 +29,15 @@ async fn main() -> std::io::Result<()> {
         ),
     }
 
-    let engine = LsmEngine::new(config).expect("Failed to initialize LSM Engine");
+    //let engine = LsmEngine::new(config).expect("Failed to initialize LSM Engine");
+    let engine = match LsmEngine::new(config) {
+        Ok(engine) => engine,
+        Err(e) => {
+            eprintln!("Erro ao inicializar LSM Engine: {e}");
+            eprintln!("Dica: se você não precisa recuperar writes não-flushados, renomeie/apague o wal.log e tente novamente.");
+            return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+        }
+    };
 
     // Iniciar servidor HTTP
     lsm_kv_store::api::start_server(engine, "127.0.0.1", 8080).await

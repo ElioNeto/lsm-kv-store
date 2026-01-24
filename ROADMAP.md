@@ -1,134 +1,236 @@
-# Roadmap atualizado — LSM KV Store
+# Roadmap — LSM KV Store
 
-Data: 2026-01-23
-
-## Status atual (já desenvolvido)
-
-- Storage engine LSM com **MemTable (BTreeMap)**, **WAL** (append + sync), **flush** para **SSTables** com Bloom filter e recuperação via WAL na inicialização. [file:42]
-- API REST e CLI já operam sobre o mesmo `data_dir` e expõem operações básicas (SET/GET/DELETE/SCAN/STATS), com suporte planejado para batch e busca por prefixo/substring. [file:42]
+Data: 2026-01-23  
+Modelo base do storage: **sempre** `key: String -> value: Vec<u8>` (LSM-Tree). [file:42]  
+Objetivo: evoluir o projeto em versões, adicionando **índices (posting lists em blocos)** e, na **v3**, suportar **múltiplas instâncias** com “perfil Mongo-like” (JSON/BSON) e “perfil RocksDB/Redis-like” (raw bytes).
 
 ---
 
-## Objetivo desta atualização
+## v0.1.x — Status atual (concluído)
 
-Manter o armazenamento exatamente como hoje (key → `Vec<u8>`) e adicionar **queries sobre o value** sem “scan total” sempre, usando **índices secundários** e, para grandes volumes, **posting lists em blocos** (chunked postings). [web:124][web:151]
+### Storage engine
+
+- MemTable (BTreeMap), WAL durável, flush para SSTables com Bloom Filter, recovery do WAL. [file:42]
+- Delete com tombstone. [file:42]
+- `stats()` e testes básicos. [file:42]
+
+### Acesso
+
+- CLI runner (REPL) e REST API (modo recomendado: single-process para evitar MemTables divergentes). [file:42]
 
 ---
 
-## Milestone 1 — Query no value (MVP por scan)
+## v0.2 — Base operacional + iteradores (fundação para índices)
+
+### Objetivo
+
+Criar as bases para operar índices sem depender de “query por scan total”.
 
 ### Entregas
 
-- Criar um módulo `query` que:
-  - faz `scan()` (ou `scan(prefix)` quando existir),
-  - decodifica `value` usando um “codec/extractor”,
-  - aplica filtros e retorna os resultados. [web:124]
-- Esse MVP é o “modo sem índice”: simples, mas com custo proporcional ao tamanho do banco, útil para validar a linguagem de queries e o formato de retorno. [web:124]
+- **Iteração eficiente por prefixo/range** no engine:
+  - `iter_prefix(prefix)` e/ou `iter_range(min..max)` mesclando MemTable + SSTables por ordem de recência e respeitando tombstones. [file:42]
+- SSTable: reduzir custo de leitura:
+  - introduzir índice interno (ex.: sparse index/offsets) para evitar varredura linear no `get()`. [file:42]
+- Robustez:
+  - validação de integridade (checksum/formatos) e tolerância a SSTables inválidas. [file:42]
 
-### API sugerida
+### Critério de pronto
 
-- `POST /query` com algo como:
-  - `{ "scope_prefix": "user:", "filter": { "city": "PortoAlegre" }, "limit": 100 }` (sem índice cai em scan). [web:124]
+- É possível ler chaves `idx:*` por prefixo com paginação estável sem varrer o banco todo. [file:42]
 
 ---
 
-## Milestone 2 — Definição de campos indexados (Index Registry)
+## v0.3 — Índices secundários (posting lists em blocos) + Query por índice (sem scan)
 
-A ideia é você poder “declarar” quais campos do value geram índice, sem mudar o formato armazenado. [web:124]
+### Objetivo
 
-### Arquivo de configuração (ex.: `indexes.toml`)
+Habilitar **queries no value** SEM scan total, usando **índices secundários** e, para alto volume, **posting lists em blocos**. [web:151]
+
+### Entregas
+
+- **Index Registry** (definir “campos indexados”):
+  - arquivo `indexes.toml` ou `indexes.json` por instância (ou global, apontando instância/namespace),
+  - define: `index_name`, `scope_prefix`, `index_type` (equality/range/text), `extractor`.
+- “Extractors” (plugins) para extrair termos indexáveis do `Vec<u8>`:
+  - `raw` (sem extração),
+  - `json_path` (quando o value for JSON),
+  - `bson_path` (quando o value for BSON),
+  - `custom` (função Rust).
+- Índice por posting blocks (layout proposto):
+  - `idx:{index}:{term}:meta -> { last_block, total_postings, ... }`
+  - `idx:{index}:{term}:blk:{000001} -> [pk1, pk2, ...]`
+  - `idx:{index}:{term}:blk:{000002} -> [...]` [web:151]
+- Atualização de índice no write-path:
+  - no `SET`: extrai termos e faz append em blocos (cria bloco novo quando cheio). [web:151]
+  - no `DELETE`: política inicial de “lazy deletion” (marcações) e limpeza em rebuild/compaction. [web:151]
+- **Query API obrigatoriamente indexada**:
+  - `POST /query` exige `index` e `term` (e opcionalmente cursor/limit),
+  - se não existir índice compatível, retorna erro (sem fallback para scan).
+
+### API administrativa
+
+- `GET /indexes` (listar)
+- `POST /indexes` (registrar)
+- `DELETE /indexes/{name}` (remover)
+- `POST /indexes/{name}/rebuild` (reconstruir índice; operação admin)
+
+### Critério de pronto
+
+- Query por `city=PortoAlegre` retorna resultados consultando apenas `idx:*` + GETs de PK (sem scan). [web:151]
+
+---
+
+## v0.4 — Compaction (para sustentar leitura e índices)
+
+### Objetivo
+
+Evitar degradação e explosão de SSTables; remover duplicatas e tombstones.
+
+### Entregas
+
+- Compaction inicial (ex.: size-tiered) conforme TODO do projeto. [file:42]
+- Estratégia para índices durante compaction:
+  - preservar postings corretos,
+  - limpar lazy deletions quando possível,
+  - oferecer `rebuild index` para corrigir inconsistências. [web:151]
+
+### Critério de pronto
+
+- Número de SSTables estabiliza e latência de leitura não degrada continuamente. [file:42]
+
+---
+
+## v0.5 — Queries compostas (sem scan) + paginação/cursores
+
+### Objetivo
+
+Suportar consultas do tipo “A AND B” usando postings.
+
+### Entregas
+
+- Interseção de posting lists (ex.: `city=PortoAlegre AND age=30`):
+  - estratégia inicial: carregar blocos do menor conjunto e testar pertença no maior (ou vice-versa),
+  - otimizar depois (ordenação, bitsets, skip pointers). [web:151]
+- Cursor estável:
+  - cursor como `(term, block_id, offset)` para paginação. [web:151]
+- Limites e proteção:
+  - `limit`, `timeout`, “max postings scanned por request”.
+
+### Critério de pronto
+
+- Consultas compostas retornam em tempo previsível, sem ler base completa.
+
+---
+
+# v3 (v1.0.0) — Múltiplas instâncias com perfis: Mongo-like e RocksDB/Redis-like
+
+> Aqui entra a solução que você pediu: **instância A** “mongo-like” (JSON/BSON + índices/queries) e **instância B** “rocksdb/redis-like” (raw bytes para log/counters), cada uma com diretório próprio.
+
+## v1.0.0 — Multi-instance + Codec por instância (principal)
+
+### Objetivo
+
+Rodar múltiplas instâncias no mesmo servidor, cada uma com:
+
+- `data_dir` independente,
+- `memtable_max_size` independente,
+- “perfil de value” (codec) independente: `raw` / `json` / `bson`.
+
+### Entregas
+
+- Arquivo de configuração `lsm.toml`:
 
 ```toml
-# indexes.toml
+[[instance]]
+name = "app"
+data_dir = "./.lsm_app"
+memtable_max_size = 4194304
+codec = "bson"   # ou "json"
+query = true
+indexes_file = "./indexes_app.toml"
 
-[[index]]
-name = "users_city"
-scope_prefix = "user:"
-type = "equality"
-extractor = { kind = "json_path", path = "$.city" }
-
-[[index]]
-name = "users_age"
-scope_prefix = "user:"
-type = "range"
-extractor = { kind = "json_path", path = "$.age" }
+[[instance]]
+name = "log"
+data_dir = "./.lsm_log"
+memtable_max_size = 16777216
+codec = "raw"
+query = false
+indexes_file = "./indexes_log.toml"
 ```
 
-### Como isso funciona
+- Server: roteamento por instância:
+  - `POST /db/{instance}/keys`
+  - `GET /db/{instance}/keys/{key}`
+  - `POST /db/{instance}/keys/batch`
+  - `DELETE /db/{instance}/keys/batch`
+  - `POST /db/{instance}/query`
+  - `GET /db/{instance}/stats`
+- Camada de codec:
+  - `raw`: value é bytes (ou string base64 no HTTP, opcional).
+  - `json`: API recebe/envia JSON; storage grava bytes UTF-8.
+  - `bson`: API recebe/envia JSON; storage grava BSON (melhor para tipos).
+- Index Registry por instância:
+  - `indexes_app.toml` com extractors JSON/BSON,
+  - `indexes_log.toml` geralmente vazio (ou só prefix-based).
 
-- `scope_prefix` define quais registros entram no índice (ex.: só keys que começam com `user:`). [web:124]
-- `extractor` define como extrair o “campo” do `Vec<u8>` (ex.: JSONPath/regex/custom), mantendo o motor KV intacto. [web:124]
-- O sistema passa a ter um “Index Registry” carregado na inicialização e usado pelo pipeline de escrita (SET/DELETE). [web:124]
+### Critério de pronto
 
----
-
-## Milestone 3 — Índices secundários com posting lists em blocos (grande volume)
-
-Para queries tipo “city = PortoAlegre”, o índice secundário pode ser visto como `attribute_value -> lista de ponteiros/ids` (postings). [web:124]
-
-### Por que blocos
-
-Guardar **uma lista gigante** em um único value gera alta amplificação de escrita, porque a cada novo item você regrava a lista inteira. [web:151]  
-Guardar **um KV por item** reduz isso, mas aumenta overhead e pode tornar compaction pesada em grande escala. [web:151]  
-A abordagem de **posting lists em blocos** é o meio-termo: cada “lista” vira vários blocos menores, reduzindo write amplification e mantendo leituras eficientes. [web:151]
-
-### Modelo de chaves do índice (proposta)
-
-Para um índice `users_city` e valor `PortoAlegre`:
-
-- Metadados do termo:
-  - `idx:users_city:PortoAlegre:meta -> { "last_block": 12, "len_last": 57 }`
-- Blocos (cada bloco é um array de primary keys):
-  - `idx:users_city:PortoAlegre:block:000001 -> ["user:1","user:7", ...]`
-  - ...
-  - `idx:users_city:PortoAlegre:block:000012 -> ["user:991","user:1200", ...]`
-
-### Operações necessárias
-
-- **Index update no SET**:
-  - extrair campos indexados do value,
-  - atualizar/append no último bloco (se cheio, criar novo bloco). [web:151]
-- **Index update no DELETE**:
-  - você pode registrar tombstone no índice (lazy delete) e limpar em compaction/rebuild, para evitar “remover do meio da lista” toda hora. [web:151]
-- **Reindex** (rebuild) por índice:
-  - varrer base (`scan(prefix)`),
-  - recomputar postings do zero para garantir consistência quando necessário. [web:124]
-
-### API sugerida
-
-- `POST /indexes/reload` (recarregar `indexes.toml`)
-- `POST /indexes/rebuild/{index_name}` (reindex on-demand) [web:124]
-- `POST /query`:
-  - se o filtro bater com um índice (ex.: equality), usar postings; senão, fallback para scan. [web:124]
+- Você consegue rodar:
+  - instância `app` com queries no value via índices,
+  - instância `log` como KV puro e rápido para ingestão.
 
 ---
 
-## Milestone 4 — Range queries (idade, timestamps)
+## v1.1 — “Mongo-like” (camada de documentos e coleções) — sem mudar o motor
 
-Índices para range (“idade >= 30”) precisam que o valor indexado preserve ordenação para permitir buscas por intervalo. [web:124]
+### Objetivo
 
-### Opção prática (para começar)
+Dar ergonomia de MongoDB no acesso, mantendo KV no storage.
 
-- Normalizar o valor para string ordenável (ex.: zero-pad para inteiros, `age:000030`), e usar chaves:
-  - `idx:users_age:000030:user:1 -> ""`
-  - `idx:users_age:000031:user:8 -> ""`  
-    para permitir varreduras por prefix/range quando o engine tiver iteradores/range scan melhores. [web:124]
+### Entregas
 
----
-
-## Milestone 5 — Engine: iteradores e compaction (para sustentar índices)
-
-Sem compaction, o número de SSTables cresce e tanto queries quanto índices sofrem com leituras mais custosas ao longo do tempo. [file:42]  
-Você já deixou “TODO: compaction” no fluxo do flush; o próximo passo é implementar compaction e tombstone cleanup para manter o custo de read/scan sob controle. [file:42]
+- Collections/namespace:
+  - `users:{id}`, `orders:{id}`.
+- Endpoints:
+  - `POST /db/app/collections/{name}` (insert)
+  - `GET /db/app/collections/{name}/{id}` (findById)
+  - `POST /db/app/collections/{name}/find` (query indexada)
+- Índices declarativos (por collection) usando posting blocks.
 
 ---
 
-## Ordem recomendada (curta e objetiva)
+## v1.2 — “Redis/RocksDB-like” (log/counters) — features úteis
 
-1. **Query MVP por scan** (define formato de query e retorno). [web:124]
-2. **Index Registry** (configurável) + extratores de value. [web:124]
-3. **Índice equality com posting blocks** (cidade/status/type). [web:151]
-4. **Rebuild de índice** e estratégia de deletes (lazy + compaction). [web:151][web:124]
-5. **Compaction** e, depois, índices de range mais completos. [file:42][web:124]
+### Objetivo
+
+Tornar a instância `log` mais próxima do papel de Redis/RocksDB.
+
+### Entregas
+
+- Operações específicas (server-side):
+  - `INCR`, `INCRBY` (sobre valores numéricos codificados),
+  - `SETNX` (set if not exists),
+  - TTL básico (expiração) via marcação + cleanup em compaction (versão inicial).
+- (Opcional futuro) Lua scripting para comandos atômicos multi-key (mais próximo do Redis).
+
+---
+
+## v1.3 — Operação: backup/recovery e ferramentas
+
+- Backup/restore por instância (snapshot de diretório + manifest).
+- Ferramentas:
+  - `lsm-admin verify`
+  - `lsm-admin rebuild-index`
+  - `lsm-admin compact`
+  - `lsm-admin export`
+
+---
+
+## Observações de design (importantes)
+
+- Mesmo com “instância Mongo-like”, o storage continua KV (`Vec<u8>`); o “mongo-like” vem da camada de codec + collections + índices por postings. [web:75][web:151]
+- Query no value sem scan só é viável com índice secundário; por isso posting blocks é a estratégia padrão para volume. [web:124][web:151]
+- Multi-instance com diretórios separados evita mistura de formatos e facilita tuning (memtable/compaction) por workload.
 
 ---
