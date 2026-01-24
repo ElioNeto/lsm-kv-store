@@ -16,7 +16,7 @@ pub struct SstableMetadata {
     pub timestamp: u128,
     pub min_key: String,
     pub max_key: String,
-    pub record_count: usize,
+    pub record_count: u32,
     pub checksum: u32,
 }
 
@@ -101,7 +101,7 @@ impl SStable {
             timestamp,
             min_key: records[0].0.clone(),
             max_key: records[records.len() - 1].0.clone(),
-            record_count: records.len(),
+            record_count: records.len() as u32,
             checksum,
         };
         let metadata_bytes = serialize(&metadata)?;
@@ -164,7 +164,7 @@ impl SStable {
             return Err(LsmError::InvalidSstable);
         }
 
-        validate_records_blob(&records_blob, metadata.record_count)?;
+        validate_records_blob(&records_blob, metadata.record_count as usize)?;
 
         Ok(Self {
             metadata,
