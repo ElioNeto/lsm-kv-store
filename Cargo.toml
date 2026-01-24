@@ -55,6 +55,10 @@ name = "lsm-server"
 path = "src/bin/server.rs"
 required-features = ["api"]
 
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
 [features]
 default = []
 api = ["actix-web", "actix-cors", "tokio", "serde_json"]
