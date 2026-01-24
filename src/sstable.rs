@@ -1,13 +1,16 @@
 use crate::codec::{decode, encode};
 use crate::error::{LsmError, Result};
 use crate::log_record::LogRecord;
-use bincode::de;
+
 use bloomfilter::Bloom;
 use crc32fast;
+
 use serde::{Deserialize, Serialize};
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
 use tracing::debug;
 
 const SST_MAGIC: &[u8; 8] = b"LSMSST01";
@@ -17,10 +20,12 @@ pub struct SstableMetadata {
     pub timestamp: u128,
     pub min_key: String,
     pub max_key: String,
+    // BLOQUEADOR: não usar usize em formato persistido
     pub record_count: u32,
     pub checksum: u32,
 }
 
+#[derive(Debug)]
 pub struct SStable {
     pub(crate) metadata: SstableMetadata,
     pub(crate) bloom_filter: Bloom<[u8]>,
@@ -39,22 +44,28 @@ fn read_and_check_magic<R: Read>(mut r: R) -> Result<()> {
 fn validate_records_blob(blob: &[u8], expected_count: usize) -> Result<()> {
     let mut cursor = std::io::Cursor::new(blob);
     let mut lenbuf = [0u8; 4];
+
     for _ in 0..expected_count {
         cursor
             .read_exact(&mut lenbuf)
             .map_err(|_| LsmError::InvalidSstable)?;
+
         let record_len = u32::from_le_bytes(lenbuf) as usize;
         let mut record_data = vec![0u8; record_len];
+
         cursor
             .read_exact(&mut record_data)
             .map_err(|_| LsmError::InvalidSstable)?;
+
         // valida que o record é decodificável
         let _: LogRecord = decode(&record_data).map_err(|_| LsmError::InvalidSstable)?;
     }
+
     // não pode sobrar “lixo” no fim
     if cursor.position() as usize != blob.len() {
         return Err(LsmError::InvalidSstable);
     }
+
     Ok(())
 }
 
@@ -70,13 +81,13 @@ impl SStable {
             ));
         }
 
-        let path = dir_path.join(format!("{}.sst", timestamp));
+        let path = dir_path.join(format!("{timestamp}.sst"));
         let mut file = BufWriter::new(File::create(&path)?);
 
         // Header (magic/version)
         file.write_all(SST_MAGIC)?;
 
-        // 1. Criar Bloom Filter
+        // 1) Bloom filter
         let mut bloom = Bloom::<[u8]>::new_for_fp_rate(records.len(), 0.01)
             .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
 
@@ -84,10 +95,9 @@ impl SStable {
             bloom.set(key.as_bytes());
         }
 
-        // Converte bloom em bytes (consome o bloom original)
         let bloom_bytes = bloom.into_bytes();
 
-        // 2. Serializar records
+        // 2) Records blob
         let mut records_blob = Vec::new();
         for (_key, record) in records.iter() {
             let record_bytes = encode(record)?;
@@ -95,9 +105,10 @@ impl SStable {
             records_blob.extend_from_slice(&len.to_le_bytes());
             records_blob.extend_from_slice(&record_bytes);
         }
+
         let checksum = crc32fast::hash(&records_blob);
 
-        // 3. Metadados
+        // 3) Metadata
         let metadata = SstableMetadata {
             timestamp,
             min_key: records[0].0.clone(),
@@ -105,9 +116,10 @@ impl SStable {
             record_count: records.len() as u32,
             checksum,
         };
+
         let metadata_bytes = encode(&metadata)?;
 
-        // 4. Escrever no arquivo
+        // 4) write file
         file.write_all(&(bloom_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&bloom_bytes)?;
         file.write_all(&(metadata_bytes.len() as u32).to_le_bytes())?;
@@ -123,7 +135,7 @@ impl SStable {
             metadata.checksum
         );
 
-        // 5. Reconstruir bloom a partir dos bytes salvos
+        // 5) rebuild bloom from bytes (to keep in-memory)
         let bloom_filter = Bloom::<[u8]>::from_bytes(bloom_bytes)
             .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
 
@@ -137,29 +149,27 @@ impl SStable {
     pub fn load(path: &Path) -> Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
 
-        // Validar Magic Number
         read_and_check_magic(&mut file)?;
 
         let mut len_buf = [0u8; 4];
 
-        // Ler Bloom Filter
+        // bloom
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         let mut bloom_data = vec![0u8; bloom_len];
         file.read_exact(&mut bloom_data)?;
         let bloom = Bloom::<[u8]>::from_bytes(bloom_data).map_err(|_| LsmError::InvalidSstable)?;
 
-        // Ler Metadados
+        // metadata
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         let mut meta_data = vec![0u8; meta_len];
         file.read_exact(&mut meta_data)?;
         let metadata: SstableMetadata = decode(&meta_data)?;
 
-        // Ler o restante (records blob) e validar checksum/integridade
+        // records blob + checksum
         let mut records_blob = Vec::new();
         file.read_to_end(&mut records_blob)?;
-
         let actual_checksum = crc32fast::hash(&records_blob);
         if actual_checksum != metadata.checksum {
             return Err(LsmError::InvalidSstable);
@@ -180,27 +190,24 @@ impl SStable {
         }
 
         let mut file = BufReader::new(File::open(&self.path)?);
-
-        // Validar Magic Number antes da leitura
         read_and_check_magic(&mut file)?;
 
         let mut len_buf = [0u8; 4];
 
-        // Pular Bloom Filter
+        // skip bloom
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(bloom_len as i64))?;
 
-        // Pular Metadados
+        // skip metadata
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(meta_len as i64))?;
 
-        // Buscar nos registros
+        // scan records (linear)
         for _ in 0..self.metadata.record_count {
             file.read_exact(&mut len_buf)?;
             let record_len = u32::from_le_bytes(len_buf) as usize;
-
             let mut record_data = vec![0u8; record_len];
             file.read_exact(&mut record_data)?;
             let record: LogRecord = decode(&record_data)?;

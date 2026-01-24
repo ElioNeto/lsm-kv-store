@@ -1,11 +1,12 @@
 use crate::codec::{decode, encode};
 use crate::error::{LsmError, Result};
 use crate::log_record::LogRecord;
-use std::fs::File;
-use std::fs::OpenOptions;
+
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
+
 use tracing::debug;
 
 pub struct WriteAheadLog {
@@ -33,7 +34,11 @@ impl WriteAheadLog {
         let serialized = encode(record)?;
         let length = serialized.len() as u32;
 
-        let mut writer = self.file.lock().unwrap();
+        let mut writer = self
+            .file
+            .lock()
+            .map_err(|_| LsmError::LockPoisoned("wal_writer"))?;
+
         writer.write_all(&length.to_le_bytes())?;
         writer.write_all(&serialized)?;
         writer.flush()?;
@@ -49,16 +54,16 @@ impl WriteAheadLog {
         let mut reader = BufReader::new(file);
 
         loop {
-            // 1) Detecta EOF limpo vs truncamento no header de tamanho
+            // EOF limpo vs truncamento no header de tamanho
             let buf = reader.fill_buf()?;
             if buf.is_empty() {
-                break; // EOF limpo (boundary)
+                break; // EOF limpo
             }
             if buf.len() < 4 {
                 return Err(LsmError::WalCorruption); // truncado no meio do length
             }
 
-            // 2) Lê o tamanho do record (4 bytes)
+            // ler o tamanho (4 bytes)
             let mut lengthbuf = [0u8; 4];
             reader.read_exact(&mut lengthbuf)?;
             let length = u32::from_le_bytes(lengthbuf) as usize;
@@ -67,7 +72,7 @@ impl WriteAheadLog {
                 return Err(LsmError::WalCorruption);
             }
 
-            // 3) Lê payload; se truncar aqui, é corrupção
+            // ler payload; se truncar aqui, é corrupção
             let mut buffer = vec![0u8; length];
             if let Err(e) = reader.read_exact(&mut buffer) {
                 if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -82,8 +87,13 @@ impl WriteAheadLog {
 
         Ok(records)
     }
+
     pub fn clear(&self) -> Result<()> {
-        let mut guard = self.file.lock().unwrap();
+        let mut guard = self
+            .file
+            .lock()
+            .map_err(|_| LsmError::LockPoisoned("wal_writer"))?;
+
         guard.flush()?;
         guard.get_ref().sync_all()?;
 
@@ -99,6 +109,7 @@ impl WriteAheadLog {
             .append(true)
             .open(&self.path)?;
         *guard = BufWriter::new(appendfile);
+
         Ok(())
     }
 }
