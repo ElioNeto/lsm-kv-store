@@ -1,14 +1,87 @@
 name: Release Workflow
 
 on:
+  push:
+    branches:
+      - "release/**"
   pull_request:
     types: [closed]
     branches:
       - main
 
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-workflow-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  open-pr-to-main:
+    name: Open PR (release -> main)
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if PR already exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_BRANCH="${{ github.ref_name }}"
+          PR_EXISTS=$(gh pr list --head "$HEAD_BRANCH" --base main --json number --jq 'length')
+          echo "pr_exists=$PR_EXISTS" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_EXISTS" -gt 0 ]; then
+            PR_NUMBER=$(gh pr list --head "$HEAD_BRANCH" --base main --json number --jq '.[0].number')
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create PR to main
+        if: steps.check-pr.outputs.pr_exists == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_BRANCH="${{ github.ref_name }}"
+          VERSION="${HEAD_BRANCH#release/v}"
+
+          gh pr create \
+            --base main \
+            --head "$HEAD_BRANCH" \
+            --title "🚀 Release v${VERSION}" \
+            --body "## 🚀 Release v${VERSION}
+
+          ### ⚙️ Release Configuration
+          **Escolha o tipo de release editando abaixo:**
+
+          Release Type: [lts]
+
+          **Opções válidas:**
+          - \`alpha\` - Release alpha (instável, desenvolvimento)
+          - \`beta\` - Release beta (pré-release, testes)
+          - \`lts\` - Release estável de longo prazo (produção)
+
+          ---
+
+          _PR criado automaticamente pelo release-workflow_" \
+            --draft
+
+      - name: PR already exists
+        if: steps.check-pr.outputs.pr_exists != '0'
+        run: |
+          echo "ℹ️ PR já existe (#${{ steps.check-pr.outputs.pr_number }}) para ${{ github.ref_name }} -> main"
+
   create-release:
-    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    name: Create GitHub Release (on merge)
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,27 +97,20 @@ jobs:
         id: extract
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        shell: bash
         run: |
-          # Extrai versão do nome da branch
           BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
           VERSION="${BRANCH_NAME#release/v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          # Remove CRLF do corpo do PR
           PR_BODY_CLEAN=$(printf '%s' "$PR_BODY" | tr -d '\r')
 
-          # Extrai o valor dentro de [alpha], [beta] ou [lts]
           RELEASE_TYPE=$(printf '%s' "$PR_BODY_CLEAN" | grep -oP 'Release Type:\s*\[\K(alpha|beta|lts)(?=\])' || true)
-
-          # Se não encontrou, tenta sem colchetes (fallback)
           if [ -z "$RELEASE_TYPE" ]; then
             RELEASE_TYPE=$(printf '%s' "$PR_BODY_CLEAN" | grep -oP 'Release Type:\s*\K(alpha|beta|lts)' || echo "lts")
           fi
 
           echo "release_type=$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
 
-          # Monta tag completa
           if [ "$RELEASE_TYPE" = "lts" ]; then
             FULL_TAG="v${VERSION}"
           else
@@ -57,19 +123,19 @@ jobs:
           echo "✅ Full Tag: $FULL_TAG"
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          toolchain: stable
-          override: true
+          cache-on-failure: true
 
       - name: Build release artifacts
-        shell: bash
         run: |
           echo "🔨 Building release artifacts..."
           cargo build --release
 
           mkdir -p artifacts
-
           if [ -d "target/release" ]; then
             find target/release -maxdepth 1 -type f -executable -exec cp {} artifacts/ \;
           fi
@@ -80,7 +146,6 @@ jobs:
       - name: Create and push tag
         env:
           FULL_TAG: ${{ steps.extract.outputs.full_tag }}
-        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -92,7 +157,6 @@ jobs:
 
       - name: Generate changelog
         id: changelog
-        shell: bash
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
 
@@ -105,7 +169,6 @@ jobs:
           fi
 
           echo "$CHANGELOG" > /tmp/changelog.txt
-          echo "changelog_file=/tmp/changelog.txt" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
@@ -113,7 +176,6 @@ jobs:
           FULL_TAG: ${{ steps.extract.outputs.full_tag }}
           VERSION: ${{ steps.extract.outputs.version }}
           RELEASE_TYPE: ${{ steps.extract.outputs.release_type }}
-        shell: bash
         run: |
           PRERELEASE_FLAG=""
           RELEASE_LABEL="Stable"
@@ -130,8 +192,6 @@ jobs:
 
           CHANGELOG=$(cat /tmp/changelog.txt)
 
-          echo "🎉 Creating GitHub Release $FULL_TAG"
-
           gh release create "$FULL_TAG" \
             --title "Release $FULL_TAG" \
             --notes "## 🎉 Release $VERSION
@@ -144,10 +204,6 @@ jobs:
 
           ---
 
-          ### 📥 Installation
-          Download the appropriate binary for your platform from the assets below.
-
-          ### 🔗 Links
           - **Pull Request**: #${{ github.event.pull_request.number }}
 
           ---
@@ -156,6 +212,3 @@ jobs:
           _Built from commit: \`${{ github.sha }}\`_" \
             $PRERELEASE_FLAG \
             artifacts/* 2>/dev/null || true
-
-          echo "✅ Release $FULL_TAG created successfully!"
-          echo "🔗 View at: https://github.com/${{ github.repository }}/releases/tag/$FULL_TAG"
