@@ -28,6 +28,17 @@ pub enum LsmError {
 
     #[error("WAL corruption detected")]
     WalCorruption,
+    #[error("Serialization failed: {0}")]
+    SerializationFailed(String),
+
+    #[error("Deserialization failed: {0}")]
+    DeserializationFailed(String),
+
+    #[error("Concurrent modification detected")]
+    ConcurrentModification,
+
+    #[error("Key not found")]
+    NotFound,
 }
 
 pub type Result<T> = std::result::Result<T, LsmError>;

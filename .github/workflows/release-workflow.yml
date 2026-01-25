@@ -1,0 +1,110 @@
+name: Release Workflow
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  create-release:
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version and release type
+        id: extract
+        run: |
+          # Extrai versão do nome da branch
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          VERSION=$(echo "$BRANCH_NAME" | sed 's/release\/v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Extrai tipo de release do corpo do PR
+          PR_BODY="${{ github.event.pull_request.body }}"
+          RELEASE_TYPE=$(echo "$PR_BODY" | grep -oP "Release Type:\s*\K(alpha|beta|lts)" || echo "lts")
+          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+
+          # Monta tag completa
+          if [ "$RELEASE_TYPE" = "lts" ]; then
+            FULL_TAG="v${VERSION}"
+          else
+            FULL_TAG="v${VERSION}-${RELEASE_TYPE}"
+          fi
+          echo "full_tag=$FULL_TAG" >> $GITHUB_OUTPUT
+
+          echo "Version: $VERSION"
+          echo "Release Type: $RELEASE_TYPE"
+          echo "Full Tag: $FULL_TAG"
+
+      - name: Build release artifacts
+        run: |
+          cargo build --release
+          mkdir -p artifacts
+          cp target/release/* artifacts/ 2>/dev/null || true
+
+      - name: Create and push tag
+        env:
+          FULL_TAG: ${{ steps.extract.outputs.full_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$FULL_TAG" -m "Release $FULL_TAG"
+          git push origin "$FULL_TAG"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" | head -50)
+          else
+            CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)")
+          fi
+
+          # Salva changelog em arquivo
+          echo "$CHANGELOG" > /tmp/changelog.txt
+          echo "changelog_file=/tmp/changelog.txt" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_TAG: ${{ steps.extract.outputs.full_tag }}
+          VERSION: ${{ steps.extract.outputs.version }}
+          RELEASE_TYPE: ${{ steps.extract.outputs.release_type }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "$RELEASE_TYPE" = "alpha" ] || [ "$RELEASE_TYPE" = "beta" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Lê o changelog
+          CHANGELOG=$(cat /tmp/changelog.txt)
+
+          # Cria a release
+          gh release create "$FULL_TAG" \
+            --title "Release $FULL_TAG" \
+            --notes "## 🎉 Release $VERSION ($RELEASE_TYPE)
+            
+            ### 📦 Type: ${RELEASE_TYPE^^}
+            
+            ### 📝 Changes
+            
+            $CHANGELOG
+            
+            ---
+            
+            Released on: $(date +'%Y-%m-%d %H:%M:%S UTC')
+            " \
+            $PRERELEASE_FLAG \
+            artifacts/* 2>/dev/null || true
+
+          echo "✅ Release $FULL_TAG criada com sucesso!"

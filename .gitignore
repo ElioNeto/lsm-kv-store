@@ -1,4 +1,4 @@
 target
 .lsm_data
-stress*
+/examples/*.json
 credentials
