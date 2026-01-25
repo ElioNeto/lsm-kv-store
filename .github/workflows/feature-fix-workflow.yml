@@ -6,6 +6,14 @@ on:
       - "feature/**"
       - "fix/**"
 
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: feature-fix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -14,28 +22,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --release --all-features
@@ -61,7 +53,6 @@ jobs:
 
       - name: Check for commits difference
         id: check-commits
-        shell: bash
         run: |
           git fetch origin develop
           COMMITS_AHEAD=$(git rev-list --count "origin/develop..${{ github.ref_name }}")
@@ -73,7 +64,6 @@ jobs:
         if: steps.check-commits.outputs.commits_ahead > 0
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           BRANCH_NAME="${{ github.ref_name }}"
           PR_EXISTS=$(gh pr list --head "$BRANCH_NAME" --base develop --json number --jq 'length')
@@ -83,7 +73,6 @@ jobs:
         if: steps.check-commits.outputs.commits_ahead > 0 && steps.check-pr.outputs.pr_exists == '0'
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           gh pr create \
             --base develop \
@@ -109,14 +98,12 @@ jobs:
 
       - name: Skip PR creation - No new commits
         if: steps.check-commits.outputs.commits_ahead == 0
-        shell: bash
         run: |
           echo "⏭️ Nenhum commit novo entre ${{ github.ref_name }} e develop"
           echo "PR não será criado pois não há mudanças para mergear"
 
       - name: Skip PR creation - PR already exists
         if: steps.check-commits.outputs.commits_ahead > 0 && steps.check-pr.outputs.pr_exists != '0'
-        shell: bash
         run: |
           echo "ℹ️ PR já existe para a branch ${{ github.ref_name }}"
           echo "Não é necessário criar um novo PR"
