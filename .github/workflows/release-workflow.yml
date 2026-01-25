@@ -1,34 +1,168 @@
-- name: Extract version and release type
-  id: extract
-  run: |
-    # Extrai versão do nome da branch
-    BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-    VERSION=$(echo "$BRANCH_NAME" | sed 's/release\/v//')
-    echo "version=$VERSION" >> $GITHUB_OUTPUT
+name: Release Workflow
 
-    # Extrai tipo de release do corpo do PR
-    # Remove caracteres CRLF e extrai texto dentro dos colchetes
-    PR_BODY=$(echo '${{ github.event.pull_request.body }}' | tr -d '\r')
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
 
-    # Extrai o valor dentro de [alpha], [beta] ou [lts]
-    # Regex busca: Release Type: seguido de [palavra]
-    RELEASE_TYPE=$(echo "$PR_BODY" | grep -oP 'Release Type:\s*\[\K(alpha|beta|lts)(?=\])' || echo "")
+jobs:
+  create-release:
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Extract version and release type
+        id: extract
+        run: |
+          # Extrai versão do nome da branch
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          VERSION=$(echo "$BRANCH_NAME" | sed 's/release\/v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Extrai tipo de release do corpo do PR
+          # Remove caracteres CRLF e extrai texto dentro dos colchetes
+          PR_BODY=$(echo '${{ github.event.pull_request.body }}' | tr -d '\r')
+          
+          # Extrai o valor dentro de [alpha], [beta] ou [lts]
+          # Regex busca: Release Type: seguido de [palavra]
+          RELEASE_TYPE=$(echo "$PR_BODY" | grep -oP 'Release Type:\s*\[\K(alpha|beta|lts)(?=\])' || echo "")
+          
+          # Se não encontrou, tenta sem colchetes (fallback)
+          if [ -z "$RELEASE_TYPE" ]; then
+            RELEASE_TYPE=$(echo "$PR_BODY" | grep -oP 'Release Type:\s*\K(alpha|beta|lts)' || echo "lts")
+          fi
+          
+          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+          
+          # Monta tag completa
+          if [ "$RELEASE_TYPE" = "lts" ]; then
+            FULL_TAG="v${VERSION}"
+          else
+            FULL_TAG="v${VERSION}-${RELEASE_TYPE}"
+          fi
+          echo "full_tag=$FULL_TAG" >> $GITHUB_OUTPUT
+          
+          echo "✅ Version: $VERSION"
+          echo "✅ Release Type: $RELEASE_TYPE"
+          echo "✅ Full Tag: $FULL_TAG"
+      
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Build release artifacts
+        run: |
+          echo "🔨 Building release artifacts..."
+          cargo build --release
+          
+          # Cria diretório para artifacts
+          mkdir -p artifacts
+          
+          # Copia binários (ajuste conforme seu projeto)
+          if [ -d "target/release" ]; then
+            # Copia apenas executáveis (não bibliotecas .so/.a)
+            find target/release -maxdepth 1 -type f -executable -exec cp {} artifacts/ \;
+          fi
+          
+          # Lista artifacts criados
+          echo "📦 Artifacts criados:"
+          ls -lh artifacts/
+      
+      - name: Create and push tag
+        env:
+          FULL_TAG: ${{ steps.extract.outputs.full_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "🏷️ Creating tag $FULL_TAG"
+          git tag -a "$FULL_TAG" -m "Release $FULL_TAG"
+          git push origin "$FULL_TAG"
+          
+          echo "✅ Tag $FULL_TAG created and pushed"
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Pega a tag anterior
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$LAST_TAG" ]; then
+            echo "📝 Generating full changelog (first release)"
+            CHANGELOG=$(git log --pretty=format:"- %s (\`%h\`)" | head -50)
+          else
+            echo "📝 Generating changelog from $LAST_TAG"
+            CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (\`%h\`)")
+          fi
+          
+          # Salva changelog em arquivo
+          echo "$CHANGELOG" > /tmp/changelog.txt
+          echo "changelog_file=/tmp/changelog.txt" >> $GITHUB_OUTPUT
+      
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_TAG: ${{ steps.extract.outputs.full_tag }}
+          VERSION: ${{ steps.extract.outputs.version }}
+          RELEASE_TYPE: ${{ steps.extract.outputs.release_type }}
+        run: |
+          PRERELEASE_FLAG=""
+          RELEASE_LABEL="Stable"
+          
+          if [ "$RELEASE_TYPE" = "alpha" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            RELEASE_LABEL="Alpha (Unstable)"
+          elif [ "$RELEASE_TYPE" = "beta" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            RELEASE_LABEL="Beta (Pre-release)"
+          elif [ "$RELEASE_TYPE" = "lts" ]; then
+            RELEASE_LABEL="LTS (Long Term Support)"
+          fi
+          
+          # Lê o changelog
+          CHANGELOG=$(cat /tmp/changelog.txt)
+          
+          echo "🎉 Creating GitHub Release $FULL_TAG"
+          
+          # Cria a release
+          gh release create "$FULL_TAG" \
+            --title "Release $FULL_TAG" \
+            --notes "## 🎉 Release $VERSION
 
-    # Se não encontrou, tenta sem colchetes (fallback)
-    if [ -z "$RELEASE_TYPE" ]; then
-      RELEASE_TYPE=$(echo "$PR_BODY" | grep -oP 'Release Type:\s*\K(alpha|beta|lts)' || echo "lts")
-    fi
+### 📦 Release Type
+**$RELEASE_LABEL**
 
-    echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+### 📝 Changes
 
-    # Monta tag completa
-    if [ "$RELEASE_TYPE" = "lts" ]; then
-      FULL_TAG="v${VERSION}"
-    else
-      FULL_TAG="v${VERSION}-${RELEASE_TYPE}"
-    fi
-    echo "full_tag=$FULL_TAG" >> $GITHUB_OUTPUT
+$CHANGELOG
 
-    echo "Version: $VERSION"
-    echo "Release Type: $RELEASE_TYPE"
-    echo "Full Tag: $FULL_TAG"
+---
+
+### 📥 Installation
+
+Download the appropriate binary for your platform from the assets below.
+
+### 🔗 Links
+- **Full Changelog**: https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo 'initial')...$FULL_TAG
+- **Pull Request**: #${{ github.event.pull_request.number }}
+
+---
+
+_Released on: $(date +'%Y-%m-%d %H:%M:%S UTC')_
+_Built from commit: \`${{ github.sha }}\`_" \
+            $PRERELEASE_FLAG \
+            artifacts/* 2>/dev/null || true
+          
+          echo "✅ Release $FULL_TAG created successfully!"
+          echo "🔗 View at: https://github.com/${{ github.repository }}/releases/tag/$FULL_TAG"
