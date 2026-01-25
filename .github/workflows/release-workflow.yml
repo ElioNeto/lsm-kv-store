@@ -1,6 +1,9 @@
 name: Release Workflow
 
 on:
+  push:
+    branches:
+      - "release/**"
   pull_request:
     types: [closed]
     branches:
@@ -11,12 +14,74 @@ defaults:
     shell: bash
 
 concurrency:
-  group: release-${{ github.event.pull_request.number }}
+  group: release-workflow-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  open-pr-to-main:
+    name: Open PR (release -> main)
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if PR already exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_BRANCH="${{ github.ref_name }}"
+          PR_EXISTS=$(gh pr list --head "$HEAD_BRANCH" --base main --json number --jq 'length')
+          echo "pr_exists=$PR_EXISTS" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_EXISTS" -gt 0 ]; then
+            PR_NUMBER=$(gh pr list --head "$HEAD_BRANCH" --base main --json number --jq '.[0].number')
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create PR to main
+        if: steps.check-pr.outputs.pr_exists == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_BRANCH="${{ github.ref_name }}"
+          VERSION="${HEAD_BRANCH#release/v}"
+
+          gh pr create \
+            --base main \
+            --head "$HEAD_BRANCH" \
+            --title "🚀 Release v${VERSION}" \
+            --body "## 🚀 Release v${VERSION}
+
+          ### ⚙️ Release Configuration
+          **Escolha o tipo de release editando abaixo:**
+
+          Release Type: [lts]
+
+          **Opções válidas:**
+          - \`alpha\` - Release alpha (instável, desenvolvimento)
+          - \`beta\` - Release beta (pré-release, testes)
+          - \`lts\` - Release estável de longo prazo (produção)
+
+          ---
+
+          _PR criado automaticamente pelo release-workflow_" \
+            --draft
+
+      - name: PR already exists
+        if: steps.check-pr.outputs.pr_exists != '0'
+        run: |
+          echo "ℹ️ PR já existe (#${{ steps.check-pr.outputs.pr_number }}) para ${{ github.ref_name }} -> main"
+
   create-release:
-    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    name: Create GitHub Release (on merge)
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,7 +136,6 @@ jobs:
           cargo build --release
 
           mkdir -p artifacts
-
           if [ -d "target/release" ]; then
             find target/release -maxdepth 1 -type f -executable -exec cp {} artifacts/ \;
           fi
@@ -105,7 +169,6 @@ jobs:
           fi
 
           echo "$CHANGELOG" > /tmp/changelog.txt
-          echo "changelog_file=/tmp/changelog.txt" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
@@ -129,8 +192,6 @@ jobs:
 
           CHANGELOG=$(cat /tmp/changelog.txt)
 
-          echo "🎉 Creating GitHub Release $FULL_TAG"
-
           gh release create "$FULL_TAG" \
             --title "Release $FULL_TAG" \
             --notes "## 🎉 Release $VERSION
@@ -143,10 +204,6 @@ jobs:
 
           ---
 
-          ### 📥 Installation
-          Download the appropriate binary for your platform from the assets below.
-
-          ### 🔗 Links
           - **Pull Request**: #${{ github.event.pull_request.number }}
 
           ---
@@ -155,6 +212,3 @@ jobs:
           _Built from commit: \`${{ github.sha }}\`_" \
             $PRERELEASE_FLAG \
             artifacts/* 2>/dev/null || true
-
-          echo "✅ Release $FULL_TAG created successfully!"
-          echo "🔗 View at: https://github.com/${{ github.repository }}/releases/tag/$FULL_TAG"
