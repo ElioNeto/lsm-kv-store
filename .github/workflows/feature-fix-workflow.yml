@@ -1,0 +1,73 @@
+name: Feature/Fix Workflow
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --all-features
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  create-pr-to-develop:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if PR already exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH_NAME="${{ github.ref_name }}"
+          PR_EXISTS=$(gh pr list --head "$BRANCH_NAME" --base develop --json number --jq 'length')
+          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request to develop
+        if: steps.check-pr.outputs.pr_exists == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base develop \
+            --head ${{ github.ref_name }} \
+            --title "[${{ github.ref_name }}] Merge to develop" \
+            --body "## Automated PR
+            
+            ✅ Build: Passed
+            ✅ Tests: Passed
+            
+            Branch: \`${{ github.ref_name }}\`
+            Commit: ${{ github.sha }}" \
+            --reviewer ""

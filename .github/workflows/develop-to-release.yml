@@ -1,0 +1,133 @@
+name: Develop to Release
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  analyze-and-create-release-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump
+        id: version
+        run: |
+          # Pega a última tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Last tag: $LAST_TAG"
+
+          # Remove 'v' prefix
+          LAST_VERSION=${LAST_TAG#v}
+          IFS='.' read -ra VERSION_PARTS <<< "$LAST_VERSION"
+          MAJOR=${VERSION_PARTS[0]:-0}
+          MINOR=${VERSION_PARTS[1]:-0}
+          PATCH=${VERSION_PARTS[2]:-0}
+
+          # Analisa commits desde a última tag
+          COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+
+          # Determina o tipo de bump baseado em conventional commits
+          if echo "$COMMITS" | grep -qiE "^(BREAKING CHANGE|feat!|fix!):"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP_TYPE="major"
+          elif echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP_TYPE="minor"
+          else
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "New version will be: v$NEW_VERSION (${BUMP_TYPE})"
+
+      - name: Create or update release branch
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          RELEASE_BRANCH="release/v${NEW_VERSION}"
+
+          # Verifica se a branch já existe
+          if git ls-remote --heads origin "$RELEASE_BRANCH" | grep -q "$RELEASE_BRANCH"; then
+            echo "Branch $RELEASE_BRANCH já existe, atualizando..."
+            git fetch origin "$RELEASE_BRANCH"
+            git checkout "$RELEASE_BRANCH"
+            git merge origin/develop --no-edit
+          else
+            echo "Criando nova branch $RELEASE_BRANCH"
+            git checkout -b "$RELEASE_BRANCH"
+          fi
+
+          git push origin "$RELEASE_BRANCH"
+          echo "RELEASE_BRANCH=$RELEASE_BRANCH" >> $GITHUB_ENV
+
+      - name: Check if PR exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        run: |
+          RELEASE_BRANCH="release/v${NEW_VERSION}"
+          PR_EXISTS=$(gh pr list --head "$RELEASE_BRANCH" --base main --json number --jq 'length')
+          if [ "$PR_EXISTS" -gt 0 ]; then
+            PR_NUMBER=$(gh pr list --head "$RELEASE_BRANCH" --base main --json number --jq '.[0].number')
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          fi
+          echo "pr_exists=$PR_EXISTS" >> $GITHUB_OUTPUT
+
+      - name: Create or update PR to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          BUMP_TYPE: ${{ steps.version.outputs.bump_type }}
+        run: |
+          RELEASE_BRANCH="release/v${NEW_VERSION}"
+
+          if [ "${{ steps.check-pr.outputs.pr_exists }}" -eq 0 ]; then
+            # Cria novo PR com template
+            gh pr create \
+              --base main \
+              --head "$RELEASE_BRANCH" \
+              --title "Release v${NEW_VERSION}" \
+              --body "## 🚀 Release v${NEW_VERSION}
+              
+              **Bump type:** ${BUMP_TYPE}
+              
+              ### ⚙️ Release Configuration
+              
+              **Antes de mergear, responda:**
+              
+              \`\`\`
+              Release Type: [alpha/beta/lts]
+              \`\`\`
+              
+              _Por favor, edite este PR e substitua o placeholder acima com:_
+              - \`alpha\` - Para releases alpha (instável, desenvolvimento)
+              - \`beta\` - Para releases beta (pré-release, testes)
+              - \`lts\` - Para releases estáveis de longo prazo
+              
+              ### 📝 Changelog
+              
+              $(git log --pretty=format:'- %s (%h)' origin/main..HEAD | head -20)
+              
+              ---
+              
+              _Este PR foi gerado automaticamente pelo workflow develop-to-release_" \
+              --draft
+            
+            echo "✅ PR criado: release/v${NEW_VERSION} → main"
+          else
+            echo "ℹ️ PR já existe (#${{ steps.check-pr.outputs.pr_number }}), atualizando..."
+          fi
