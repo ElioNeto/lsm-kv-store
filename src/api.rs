@@ -86,8 +86,8 @@ async fn get_stats(data: web::Data<AppState>) -> impl Responder {
     })
 }
 
-// GET /stats_all - Estatísticas completas
-#[get("/stats_all")]
+// GET /stats/all - Estatísticas completas
+#[get("/stats/all")]
 async fn get_stats_all(data: web::Data<AppState>) -> impl Responder {
     let stats = data.engine.stats_all();
     HttpResponse::Ok().json(ApiResponse {
