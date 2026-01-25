@@ -27,6 +27,19 @@ impl Default for LsmConfig {
     }
 }
 
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct LsmStats {
+    pub mem_records: usize,
+    pub mem_kb: usize,
+    pub sst_files: usize,
+    pub sst_records: u64,
+    pub sst_kb: u64,
+    pub wal_kb: u64,
+    pub total_records: u64,
+}
+
 pub struct LsmEngine {
     pub(crate) memtable: Mutex<MemTable>,
     pub(crate) wal: WriteAheadLog,
@@ -177,7 +190,6 @@ impl LsmEngine {
 
     fn flush(&self) -> Result<()> {
         let mut memtable = self.memtable_lock()?;
-
         let records: Vec<(String, LogRecord)> = memtable
             .iter_ordered()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -189,11 +201,12 @@ impl LsmEngine {
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
+        // 1. Criar SSTable e garantir fsync
         let sst = SStable::create(&self.dir_path, timestamp, &records)?;
 
+        // 2. Adicionar à lista em memória
         let mut sstables = self.sstables_lock()?;
         sstables.insert(0, sst);
-
         let cleared = memtable.clear();
 
         info!(
@@ -205,9 +218,9 @@ impl LsmEngine {
         drop(memtable);
         drop(sstables);
 
+        // 3. SOMENTE AGORA limpar WAL (após SSTable estar durável)
         self.wal.clear()?;
 
-        // TODO: compaction
         Ok(())
     }
 
@@ -318,15 +331,13 @@ impl LsmEngine {
         )
     }
 
-    pub fn stats_all(&self) -> String {
-        let memtable = match self.memtable_lock() {
-            Ok(g) => g,
-            Err(e) => return format!("LSM Stats:\n Lock error: {e}"),
-        };
-        let sstables = match self.sstables_lock() {
-            Ok(g) => g,
-            Err(e) => return format!("LSM Stats:\n Lock error: {e}"),
-        };
+    pub fn stats_all(&self) -> std::result::Result<LsmStats, String> {
+        let memtable = self
+            .memtable_lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
+        let sstables = self
+            .sstables_lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
 
         let mem_records = memtable.data.len();
         let mem_kb = memtable.size_bytes / 1024;
@@ -346,17 +357,17 @@ impl LsmEngine {
             .map(|m| m.len())
             .unwrap_or(0);
 
-        format!(
-            "LSM Stats:\n\
-             MemTable: {} records, ~{} KB\n\
-             SSTables: {} files, {} records (raw), ~{} KB on disk\n\
-             WAL: ~{} KB",
+        // Cálculo do total geral
+        let total_records = (mem_records as u64) + sst_records_total;
+
+        Ok(LsmStats {
             mem_records,
             mem_kb,
             sst_files,
-            sst_records_total,
-            (sst_bytes_total / 1024),
-            (wal_bytes / 1024),
-        )
+            sst_records: sst_records_total,
+            sst_kb: sst_bytes_total / 1024,
+            wal_kb: wal_bytes / 1024,
+            total_records,
+        })
     }
 }

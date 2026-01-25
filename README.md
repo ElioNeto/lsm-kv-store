@@ -320,7 +320,7 @@ Contributions are welcome! Priority areas for v1 → v2 transition:
 **Contribution workflow:**
 
 1. Fork repository
-2. Create feature branch: `git checkout -b feat/my-feature`
+2. Create feature branch: `git checkout -b feature/my-feature`
 3. Commit changes with clear messages
 4. Run tests and linters
 5. Open Pull Request with detailed description
