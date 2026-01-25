@@ -5,6 +5,7 @@
 
 ### Variáveis globais
 @baseUrl = http://localhost:8080
+#@baseUrl = https://steadfast-connection-dev.up.railway.app
 @contentType = application/json
 
 ### ============================================================================
@@ -19,7 +20,7 @@ GET {{baseUrl}}/health
 
 ### Estatísticas do Engine
 # @name stats
-GET {{baseUrl}}/stats
+GET {{baseUrl}}/stats/all
 
 ### ============================================================================
 ### 2. OPERAÇÕES BÁSICAS (CRUD Único)
@@ -81,7 +82,7 @@ DELETE {{baseUrl}}/keys/user:alice
 
 ### Verificar chave deletada
 # @name verifyDeleted
-GET {{baseUrl}}/keys/user:alice
+GET {{baseUrl}}/keys/user:alice1
 
 ### ============================================================================
 ### 3. OPERAÇÕES BATCH (Múltiplos registros)
@@ -448,3 +449,9 @@ POST {{baseUrl}}/keys/batch
 Content-Type: application/json
 
 < ../examples/stress_test_data.json
+###
+#
+POST {{baseUrl}}/keys/batch
+Content-Type: application/json
+
+< ../examples/carga.json

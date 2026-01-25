@@ -27,6 +27,19 @@ impl Default for LsmConfig {
     }
 }
 
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct LsmStats {
+    pub mem_records: usize,
+    pub mem_kb: usize,
+    pub sst_files: usize,
+    pub sst_records: u64,
+    pub sst_kb: u64,
+    pub wal_kb: u64,
+    pub total_records: u64,
+}
+
 pub struct LsmEngine {
     pub(crate) memtable: Mutex<MemTable>,
     pub(crate) wal: WriteAheadLog,
@@ -318,15 +331,13 @@ impl LsmEngine {
         )
     }
 
-    pub fn stats_all(&self) -> String {
-        let memtable = match self.memtable_lock() {
-            Ok(g) => g,
-            Err(e) => return format!("LSM Stats:\n Lock error: {e}"),
-        };
-        let sstables = match self.sstables_lock() {
-            Ok(g) => g,
-            Err(e) => return format!("LSM Stats:\n Lock error: {e}"),
-        };
+    pub fn stats_all(&self) -> std::result::Result<LsmStats, String> {
+        let memtable = self
+            .memtable_lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
+        let sstables = self
+            .sstables_lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
 
         let mem_records = memtable.data.len();
         let mem_kb = memtable.size_bytes / 1024;
@@ -346,17 +357,17 @@ impl LsmEngine {
             .map(|m| m.len())
             .unwrap_or(0);
 
-        format!(
-            "LSM Stats:\n\
-             MemTable: {} records, ~{} KB\n\
-             SSTables: {} files, {} records (raw), ~{} KB on disk\n\
-             WAL: ~{} KB",
+        // Cálculo do total geral
+        let total_records = (mem_records as u64) + sst_records_total;
+
+        Ok(LsmStats {
             mem_records,
             mem_kb,
             sst_files,
-            sst_records_total,
-            (sst_bytes_total / 1024),
-            (wal_bytes / 1024),
-        )
+            sst_records: sst_records_total,
+            sst_kb: sst_bytes_total / 1024,
+            wal_kb: wal_bytes / 1024,
+            total_records,
+        })
     }
 }

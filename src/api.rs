@@ -70,12 +70,24 @@ async fn get_stats(data: web::Data<AppState>) -> impl Responder {
 /// GET /statsAll - Estatísticas do engine
 #[get("/stats/all")]
 async fn get_stats_all(data: web::Data<AppState>) -> impl Responder {
-    let stats = data.engine.stats_all();
-    HttpResponse::Ok().json(ApiResponse {
-        success: true,
-        message: "Stats retrieved".to_string(),
-        data: Some(serde_json::json!({ "stats": stats })),
-    })
+    match data.engine.stats_all() {
+        Ok(stats) => {
+            HttpResponse::Ok().json(ApiResponse {
+                success: true,
+                message: "Stats retrieved".to_string(),
+                // Aqui você retorna o objeto stats completo
+                data: Some(serde_json::json!({
+                    "stats_details": stats,
+                    "total_records": stats.total_records
+                })),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
+            success: false,
+            message: e,
+            data: None,
+        }),
+    }
 }
 
 /// GET /keys/{key} - Buscar valor por chave
