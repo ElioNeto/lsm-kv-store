@@ -190,7 +190,6 @@ impl LsmEngine {
 
     fn flush(&self) -> Result<()> {
         let mut memtable = self.memtable_lock()?;
-
         let records: Vec<(String, LogRecord)> = memtable
             .iter_ordered()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -202,11 +201,12 @@ impl LsmEngine {
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
+        // 1. Criar SSTable e garantir fsync
         let sst = SStable::create(&self.dir_path, timestamp, &records)?;
 
+        // 2. Adicionar à lista em memória
         let mut sstables = self.sstables_lock()?;
         sstables.insert(0, sst);
-
         let cleared = memtable.clear();
 
         info!(
@@ -218,9 +218,9 @@ impl LsmEngine {
         drop(memtable);
         drop(sstables);
 
+        // 3. SOMENTE AGORA limpar WAL (após SSTable estar durável)
         self.wal.clear()?;
 
-        // TODO: compaction
         Ok(())
     }
 

@@ -32,8 +32,8 @@ POST {{baseUrl}}/keys
 Content-Type: {{contentType}}
 
 {
-    "key": "user:alice",
-    "value": "Alice Silva"
+    "key": "user:texuguito",
+    "value": "Texugo Limão"
 }
 
 ###
