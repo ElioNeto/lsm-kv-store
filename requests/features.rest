@@ -14,12 +14,12 @@ GET  {{baseUrl}}/features/feature:admin:frontend
 ### ============================================================================
 ### criar ou editar uma features flag
 # @name createOrUpdateFeature
-POST  {{baseUrl}}/features/admin:frontend:statiscs:chart
+POST  {{baseUrl}}/features/admin:frontend:menu:scan
 Content-Type: {{contentType}}
 
 {
     "enabled": false,
-    "description": "Habilita o gráfico de estatísticas no painel administrativo"
+    "description": "Habilita o menu de scan no frontend"
 }
 ### ============================================================================
 ### Buscar chave específica
