@@ -32,7 +32,7 @@ POST {{baseUrl}}/keys
 Content-Type: {{contentType}}
 
 {
-    "key": "user:texuguito",
+    "key": "user:texuguito2",
     "value": "Texugo Limão"
 }
 

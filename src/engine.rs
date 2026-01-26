@@ -21,7 +21,7 @@ pub struct LsmConfig {
 impl Default for LsmConfig {
     fn default() -> Self {
         Self {
-            memtable_max_size: 4 * 1024 * 1024,
+            memtable_max_size: 4 * 1024 * 1024, // 4 MB
             data_dir: PathBuf::from("./.lsm_data"),
         }
     }
@@ -38,6 +38,7 @@ pub struct LsmStats {
     pub sst_kb: u64,
     pub wal_kb: u64,
     pub total_records: u64,
+    pub memtable_max_size: usize,
 }
 
 pub struct LsmEngine {
@@ -45,6 +46,7 @@ pub struct LsmEngine {
     pub(crate) wal: WriteAheadLog,
     pub(crate) sstables: Mutex<Vec<SStable>>,
     pub(crate) dir_path: PathBuf,
+    pub(crate) config: LsmConfig,
 }
 
 impl LsmEngine {
@@ -96,6 +98,7 @@ impl LsmEngine {
             wal,
             sstables: Mutex::new(sstables),
             dir_path: config.data_dir.clone(),
+            config,
         })
     }
 
@@ -368,6 +371,7 @@ impl LsmEngine {
             sst_kb: sst_bytes_total / 1024,
             wal_kb: wal_bytes / 1024,
             total_records,
+            memtable_max_size: self.config.memtable_max_size / 1024,
         })
     }
 }
