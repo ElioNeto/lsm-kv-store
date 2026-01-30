@@ -1,6 +1,6 @@
 ### Variáveis globais
-@baseUrl = http://localhost:8080
-#@baseUrl = https://steadfast-connection-dev.up.railway.app
+#@baseUrl = http://localhost:8080
+@baseUrl = https://steadfast-connection-dev.up.railway.app
 @contentType = application/json
 
 ### ============================================================================
@@ -14,11 +14,11 @@ GET  {{baseUrl}}/features/feature:admin:frontend
 ### ============================================================================
 ### criar ou editar uma features flag
 # @name createOrUpdateFeature
-POST  {{baseUrl}}/features/admin:frontend:menu:scan
+POST  {{baseUrl}}/features/admin:frontend:menu:keys
 Content-Type: {{contentType}}
 
 {
-    "enabled": false,
+    "enabled": true,
     "description": "Habilita o menu de scan no frontend"
 }
 ### ============================================================================

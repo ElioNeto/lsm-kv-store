@@ -2,7 +2,7 @@ use lsm_kv_store::{LsmConfig, LsmEngine};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configurar tracing
     tracing_subscriber::fmt()
         .with_target(false)
