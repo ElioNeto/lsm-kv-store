@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::engine::LsmEngine;
-use crate::error::Result;
+use crate::core::engine::LsmEngine;
+use crate::infra::codec;
+use crate::infra::error::{LsmError, Result}; // Use o módulo para chamadas explicitas
 
 /// Configuração de uma feature flag individual
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,15 +52,18 @@ impl FeatureClient {
 
     /// Carrega todas as features (com cache)
     fn load_features(&self) -> Result<Features> {
-        // Verificar cache
-        {
-            let cache = self.cache.read().unwrap();
-            if let Some((features, timestamp)) = cache.as_ref() {
-                if timestamp.elapsed() < self.cache_ttl {
-                    return Ok(features.clone());
-                }
+        // ...
+        let bytes_opt = self.engine.get(Self::KEY)?;
+        let bytes = match bytes_opt {
+            Some(b) => b, // Aqui 'b' deve ser Vec<u8>
+            None => {
+                let features = Features::default();
+                let json = serde_json::to_vec(&features)
+                    .map_err(|e| LsmError::SerializationFailed(e.to_string()))?;
+                self.engine.set(Self::KEY.to_string(), json)?;
+                return Ok(features);
             }
-        }
+        };
 
         // Cache miss ou expirado - carregar do engine
         let bytes = match self.engine.get(Self::KEY)? {
@@ -75,7 +79,7 @@ impl FeatureClient {
         };
 
         let features: Features = serde_json::from_slice(&bytes)
-            .map_err(|e| crate::error::LsmError::DeserializationFailed(e.to_string()))?;
+            .map_err(|e| LsmError::DeserializationFailed(e.to_string()))?;
 
         // Atualizar cache
         let mut cache = self.cache.write().unwrap();
