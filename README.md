@@ -25,9 +25,9 @@ graph TD
         Writer[Write Path]
         Reader[Read Path]
         
-        MemTable[MemTable<br/>(In-Memory BTreeMap)]
-        WAL[Write-Ahead Log<br/>(Disk Append-Only)]
-        SSTables[SSTables<br/>(Sorted String Tables)]
+        MemTable[MemTable\n(In-Memory BTreeMap)]
+        WAL[Write-Ahead Log\n(Disk Append-Only)]
+        SSTables[SSTables\n(Sorted String Tables)]
         Bloom[Bloom Filters]
     end
 
@@ -41,6 +41,7 @@ graph TD
     Reader -- 1. Query --> MemTable
     Reader -- 2. Check Filter --> Bloom
     Bloom -- 3. Scan (If present) --> SSTables
+
 ```
 
 ### Core Components
