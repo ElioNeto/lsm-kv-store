@@ -25,9 +25,9 @@ graph TD
         Writer[Write Path]
         Reader[Read Path]
         
-        MemTable[MemTable (In-Memory BTreeMap)]
-        WAL[Write-Ahead Log (Disk Append-Only)]
-        SSTables[SSTables (Sorted String Tables)]
+        MemTable["MemTable<br/>(In-Memory BTreeMap)"]
+        WAL["Write-Ahead Log<br/>(Disk Append-Only)"]
+        SSTables["SSTables<br/>(Sorted String Tables)"]
         Bloom[Bloom Filters]
     end
 
