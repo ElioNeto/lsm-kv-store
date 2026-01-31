@@ -1,4 +1,4 @@
-use crate::log_record::LogRecord;
+use crate::core::log_record::LogRecord;
 use std::collections::BTreeMap;
 
 pub struct MemTable {

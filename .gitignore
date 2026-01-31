@@ -2,3 +2,4 @@ target
 .lsm_data
 /examples/*.json
 credentials
+*.sh

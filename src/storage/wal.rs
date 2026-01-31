@@ -1,6 +1,6 @@
-use crate::codec::{decode, encode};
-use crate::error::{LsmError, Result};
-use crate::log_record::LogRecord;
+use crate::core::log_record::LogRecord;
+use crate::infra::codec::{decode, encode};
+use crate::infra::error::{LsmError, Result};
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
