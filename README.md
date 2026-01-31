@@ -3,15 +3,15 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-> **A high-performance, embedded key-value store written in Rust, now with a modular SOLID architecture.**
+> **A high-performance, embedded key-value store written in Rust, now featuring a modular SOLID architecture.**
 
-Este projeto é uma implementação da arquitetura **Log-Structured Merge-Tree (LSM-Tree)**, focada em alto throughput de escrita e durabilidade. Recentemente, o projeto foi reestruturado seguindo os princípios **SOLID** para garantir testabilidade, separação de preocupações e facilidade de manutenção.
+This project is an implementation of the **Log-Structured Merge-Tree (LSM-Tree)** architecture, focused on high write throughput and durability. Recently, the project was restructured following **SOLID** principles to ensure testability, separation of concerns, and ease of maintenance.
 
 ---
 
-## 🏗 Arquitetura & Design
+## 🏗 Architecture & Design
 
-A engine agora utiliza um design modular onde cada componente possui uma responsabilidade única, facilitando a substituição de implementações (ex: trocar Bincode por Protobuf ou BTreeMap por SkipList).
+The engine now uses a modular design where each component has a single responsibility, making it easy to swap implementations (e.g., replace Bincode with Protobuf or BTreeMap with SkipList).
 
 ```mermaid
 graph TD
@@ -42,75 +42,75 @@ graph TD
     Engine -- Read --> MemTable & SST
 ```
 
-### 📂 Estrutura de Pastas (SOLID)
+### 📂 Folder Structure (SOLID)
 
-| Diretório       | Responsabilidade                                                       | Princípio Aplicado              |
-| :-------------- | :--------------------------------------------------------------------- | :------------------------------ |
-| `src/core/`     | **O Cérebro.** Contém a Engine, MemTable e definição de registros.     | **SRP** (Single Responsibility) |
-| `src/storage/`  | **Persistência.** Gerencia a escrita física (WAL) e o formato SSTable. | **DIP** (Dependency Inversion)  |
-| `src/infra/`    | **Utilidades.** Tratamento de erros global e lógica de serialização.   | **Separation of Concerns**      |
-| `src/features/` | **Domínio de Negócio.** Gerenciamento de Feature Flags com cache.      | **Modularity**                  |
-| `src/api/`      | **Transporte.** Servidor REST Actix-Web e Handlers.                    | **Decoupling**                  |
-| `src/cli/`      | **Interface.** Implementação do REPL interativo.                       | **Isolation**                   |
+| Directory       | Responsibility                                                        | Applied Principle               |
+| :-------------- | :-------------------------------------------------------------------- | :------------------------------ |
+| `src/core/`     | **The Brain.** Contains the Engine, MemTable, and record definitions. | **SRP** (Single Responsibility) |
+| `src/storage/`  | **Persistence.** Manages physical writes (WAL) and SSTable format.    | **DIP** (Dependency Inversion)  |
+| `src/infra/`    | **Utilities.** Global error handling and serialization logic.         | **Separation of Concerns**      |
+| `src/features/` | **Business Domain.** Feature Flag management with caching.            | **Modularity**                  |
+| `src/api/`      | **Transport.** Actix-Web REST server and handlers.                    | **Decoupling**                  |
+| `src/cli/`      | **Interface.** Interactive REPL implementation.                       | **Isolation**                   |
 
 ---
 
-## 🚀 Como Iniciar
+## 🚀 Getting Started
 
-### Pré-requisitos
+### Prerequisites
 
 - Rust 1.70+
 
-### Instalação & Execução
+### Installation & Execution
 
 ```bash
-# Clone o repositório
+# Clone the repository
 git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
 
-# Modo CLI Interativo
+# Interactive CLI Mode
 cargo run --release
 
-# Modo Servidor API (com Feature Flags)
+# API Server Mode (with Feature Flags)
 cargo run --release --features api
 ```
 
 ---
 
-## 🌐 API & Gerenciamento de Features
+## 🌐 API & Feature Management
 
-A API agora inclui suporte nativo para **Feature Flags**, permitindo habilitar/desabilitar funcionalidades em tempo de execução sem reiniciar o banco.
+The API now includes native support for **Feature Flags**, allowing you to enable/disable functionality at runtime without restarting the database.
 
-### Endpoints Principais
+### Main Endpoints
 
-| Método | Endpoint         | Descrição                                            |
-| :----- | :--------------- | :--------------------------------------------------- |
-| `GET`  | `/keys/{key}`    | Busca um valor pela chave.                           |
-| `POST` | `/keys`          | Insere ou atualiza um par chave-valor.               |
-| `GET`  | `/stats/all`     | Telemetria completa (Mem, Disk, WAL).                |
-| `GET`  | `/features`      | Lista todas as Feature Flags configuradas.           |
-| `POST` | `/features/{id}` | Cria ou atualiza uma flag (ex: `{"enabled": true}`). |
-
----
-
-## ⚡ Decisões de Design (v2.0)
-
-1.  **Inversão de Dependência:** O `LsmEngine` não gerencia mais arquivos diretamente; ele delega para `WriteAheadLog` e `SstableManager`, facilitando o mock para testes unitários.
-2.  **Robustez no Codec:** Centralizamos a serialização em `infra/codec.rs`, garantindo que todo o sistema utilize consistentemente _Little Endian_ e codificação de inteiros fixos.
-3.  **Performance:** Mantivemos o uso de **Bloom Filters** nas SSTables para evitar IO desnecessário em chaves inexistentes.
-4.  **Optimistic Locking:** O sistema de Feature Flags implementa controle de versão para evitar condições de corrida em atualizações concorrentes.
+| Method | Endpoint         | Description                                         |
+| :----- | :--------------- | :-------------------------------------------------- |
+| `GET`  | `/keys/{key}`    | Retrieves a value by key.                           |
+| `POST` | `/keys`          | Inserts or updates a key-value pair.                |
+| `GET`  | `/stats/all`     | Full telemetry (Memory, Disk, WAL).                 |
+| `GET`  | `/features`      | Lists all configured Feature Flags.                 |
+| `POST` | `/features/{id}` | Creates or updates a flag (e.g., `{"enabled": true}`). |
 
 ---
 
-## 🗺️ Roadmap
+## ⚡ Design Decisions (v2.0)
 
-- [x] **Arquitetura SOLID** (Reestruturação completa de módulos)
-- [x] **Feature Flags System** (Gerenciamento dinâmico persistido no LSM)
-- [ ] **v2: Indexação Esparsa** (Reduzir tempo de busca em arquivos SST grandes)
-- [ ] **v3: Estratégia de Compactação** (Leveled Compaction para reduzir amplificação de leitura)
+1. **Dependency Inversion:** `LsmEngine` no longer manages files directly; it delegates to `WriteAheadLog` and `SstableManager`, making unit testing easier with mocks.  
+2. **Codec Robustness:** Serialization is centralized in `infra/codec.rs`, ensuring consistent use of _Little Endian_ and fixed-width integer encoding.  
+3. **Performance:** Bloom Filters are used in SSTables to avoid unnecessary IO for non-existent keys.  
+4. **Optimistic Locking:** The Feature Flags system implements version control to prevent race conditions during concurrent updates.  
 
 ---
 
-## Licença
+## 🗺 Roadmap
+
+- [x] **SOLID Architecture** (Complete module restructuring)  
+- [x] **Feature Flags System** (Dynamic management persisted in LSM)  
+- [ ] **v2: Sparse Indexing** (Reduce lookup time in large SST files)  
+- [ ] **v3: Compaction Strategy** (Leveled Compaction to reduce read amplification)  
+
+---
+
+## License
 
 MIT License - veja [LICENSE](LICENSE) para detalhes.
