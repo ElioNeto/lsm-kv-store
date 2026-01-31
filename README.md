@@ -1,350 +1,116 @@
-# LSM KV Store
+# 🦀 LSM KV Store
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-High-performance, embedded key-value store written in Rust, based on the **LSM-Tree (Log-Structured Merge-Tree)** architecture. Optimized for high write throughput with durability guarantees via Write-Ahead Log (WAL).
+> **A high-performance, embedded key-value store written in Rust, now with a modular SOLID architecture.**
 
-**Current version:** v1 (Development)
-
----
-
-## Features
-
-### Storage Engine (v1)
-
-- **MemTable**: In-memory write buffer using `BTreeMap` for ordered key storage
-- **Write-Ahead Log (WAL)**: Durable append-only log with fsync guarantees
-- **SSTables**: Immutable sorted string tables with automatic flush on MemTable overflow
-- **Bloom Filters**: Per-SSTable probabilistic filters to reduce unnecessary disk I/O
-- **Crash Recovery**: Automatic WAL replay on startup
-- **Logical Deletes**: Tombstone markers for efficient delete operations
-
-### Access Methods
-
-- **Interactive CLI**: REPL-style command-line interface for local operations
-- **REST API**: HTTP server with JSON endpoints for remote access
-- **Library**: Embeddable Rust crate for programmatic usage
+Este projeto é uma implementação da arquitetura **Log-Structured Merge-Tree (LSM-Tree)**, focada em alto throughput de escrita e durabilidade. Recentemente, o projeto foi reestruturado seguindo os princípios **SOLID** para garantir testabilidade, separação de preocupações e facilidade de manutenção.
 
 ---
 
-## Architecture Overview
+## 🏗 Arquitetura & Design
 
+A engine agora utiliza um design modular onde cada componente possui uma responsabilidade única, facilitando a substituição de implementações (ex: trocar Bincode por Protobuf ou BTreeMap por SkipList).
+
+```mermaid
+graph TD
+    subgraph Interface_Layer
+        CLI[CLI / REPL]
+        API[REST API]
+    end
+
+    subgraph Core_Domain
+        Engine[LSM Engine]
+        MemTable[MemTable]
+        LogRecord[LogRecord]
+    end
+
+    subgraph Storage_Layer
+        WAL[Write-Ahead Log]
+        SST[SSTable Manager]
+    end
+
+    subgraph Infrastructure
+        Codec[Serialization]
+        Error[Error Handling]
+    end
+
+    CLI & API --> Engine
+    Engine --> WAL & MemTable
+    MemTable -- Flush --> SST
+    Engine -- Read --> MemTable & SST
 ```
 
-┌─────────────────┐
-│   Application   │
-└────────┬────────┘
-         │
-┌────────┴───────────┐
-│   CLI   │  REST API│
-└────┬──────────┬────┘
-     └──────────┤
-          ┌─────▼──────┐
-          │ LsmEngine  │
-          └──────┬─────┘
-     ┌───────────┼─────────┐
-┌────▼─────┐ ┌───▼───┐ ┌───▼────┐
-│MemTable  │ │  WAL  │ │SSTable │
-│(BTreeMap)│ │(.log) │ │ (.sst) │
-└──────────┘ └───────┘ └────────┘
+### 📂 Estrutura de Pastas (SOLID)
 
-```
-
-### Write Path
-
-1. Serialize `LogRecord` (key, value, timestamp, tombstone flag)
-2. Append to WAL and sync to disk
-3. Insert into MemTable (in-memory BTreeMap)
-4. On MemTable size threshold: flush to SSTable, clear WAL
-
-### Read Path
-
-1. Query MemTable (most recent data)
-2. If not found, scan SSTables from newest to oldest
-3. Use Bloom Filter before reading each SSTable to skip non-existent keys
-4. Return first non-tombstone match
+| Diretório       | Responsabilidade                                                       | Princípio Aplicado              |
+| :-------------- | :--------------------------------------------------------------------- | :------------------------------ |
+| `src/core/`     | **O Cérebro.** Contém a Engine, MemTable e definição de registros.     | **SRP** (Single Responsibility) |
+| `src/storage/`  | **Persistência.** Gerencia a escrita física (WAL) e o formato SSTable. | **DIP** (Dependency Inversion)  |
+| `src/infra/`    | **Utilidades.** Tratamento de erros global e lógica de serialização.   | **Separation of Concerns**      |
+| `src/features/` | **Domínio de Negócio.** Gerenciamento de Feature Flags com cache.      | **Modularity**                  |
+| `src/api/`      | **Transporte.** Servidor REST Actix-Web e Handlers.                    | **Decoupling**                  |
+| `src/cli/`      | **Interface.** Implementação do REPL interativo.                       | **Isolation**                   |
 
 ---
 
-## Quick Start
+## 🚀 Como Iniciar
 
-### Prerequisites
+### Pré-requisitos
 
-- Rust 1.70+ ([install via rustup](https://rustup.rs))
-- Git
+- Rust 1.70+
 
-### Installation
+### Instalação & Execução
 
 ```bash
-# Clone repository
+# Clone o repositório
 git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
 
-# Build project
-cargo build --release
+# Modo CLI Interativo
+cargo run --release
 
-# Run tests
-cargo test
-```
-
-### Running the CLI
-
-```bash
-cargo run --bin lsm-kv-store
-```
-
-**Available commands:**
-
-```
-SET key value          - Insert or update key-value pair
-GET key               - Retrieve value for key
-DELETE key            - Mark key as deleted (tombstone)
-ALL                   - List all records
-KEYS                  - List all keys
-COUNT                 - Count active records
-STATS                 - Display engine statistics
-BATCH n               - Insert n test records
-SCAN prefix           - List records by prefix (planned for v2)
-DEMO                  - Run automated feature demonstration
-HELP                  - Show command reference
-EXIT                  - Quit CLI
-```
-
-### Running the REST API Server
-
-```bash
-cargo run --bin lsm-server --features api
-```
-
-Server starts on `http://127.0.0.1:8080`
-
-**Endpoints:**
-
-| Method   | Endpoint                              | Description                                                |
-| :------- | :------------------------------------ | :--------------------------------------------------------- |
-| `GET`    | `/health`                             | Healthcheck                                                |
-| `GET`    | `/stats`                              | Engine statistics (brief)                                  |
-| `GET`    | `/stats_all`                          | Detailed statistics (MemTable + SSTables + WAL)            |
-| `GET`    | `/keys`                               | List all keys                                              |
-| `GET`    | `/keys/{key}`                         | Get value for specific key                                 |
-| `POST`   | `/keys`                               | Insert/update key (body: `{"key": "...", "value": "..."}`) |
-| `POST`   | `/keys/batch`                         | Batch insert (body: `{"records": [{...}, {...}]}`)         |
-| `DELETE` | `/keys/{key}`                         | Delete key (tombstone)                                     |
-| `DELETE` | `/keys/batch`                         | Batch delete (body: `{"keys": ["...", "..."]}`)            |
-| `GET`    | `/keys/search?q=pattern&prefix=false` | Search by substring or prefix                              |
-| `GET`    | `/scan`                               | Full scan (returns all key-value pairs)                    |
-
-**Example requests:**
-
-```bash
-# Insert key
-curl -X POST http://localhost:8080/keys \
-  -H "Content-Type: application/json" \
-  -d '{"key": "user:123", "value": "Alice"}'
-
-# Get key
-curl http://localhost:8080/keys/user:123
-
-# Search by prefix
-curl "http://localhost:8080/keys/search?q=user:&prefix=true"
-
-# Delete key
-curl -X DELETE http://localhost:8080/keys/user:123
+# Modo Servidor API (com Feature Flags)
+cargo run --release --features api
 ```
 
 ---
 
-## Project Structure
+## 🌐 API & Gerenciamento de Features
 
-```
-lsm-kv-store/
-├── src/
-│   ├── lib.rs           # Library exports
-│   ├── main.rs          # CLI binary
-│   ├── engine.rs        # LSM engine core
-│   ├── memtable.rs      # In-memory BTreeMap wrapper
-│   ├── wal.rs           # Write-Ahead Log
-│   ├── sstable.rs       # SSTable read/write
-│   ├── log_record.rs    # Record serialization
-│   ├── error.rs         # Error types
-│   ├── codec.rs         # Binary encoding (bincode)
-│   ├── bin/
-│   │   └── server.rs    # REST API server
-│   └── api.rs           # HTTP handlers (feature-gated)
-├── Cargo.toml
-├── ROADMAP.md           # Detailed version roadmap
-└── README.md
-```
+A API agora inclui suporte nativo para **Feature Flags**, permitindo habilitar/desabilitar funcionalidades em tempo de execução sem reiniciar o banco.
 
-**Data directory (default: `./.lsmdata`):**
+### Endpoints Principais
 
-```
-.lsmdata/
-├── wal.log              # Write-Ahead Log
-├── 1706123456789.sst    # SSTable (timestamp-based naming)
-├── 1706123467890.sst
-└── ...
-```
+| Método | Endpoint         | Descrição                                            |
+| :----- | :--------------- | :--------------------------------------------------- |
+| `GET`  | `/keys/{key}`    | Busca um valor pela chave.                           |
+| `POST` | `/keys`          | Insere ou atualiza um par chave-valor.               |
+| `GET`  | `/stats/all`     | Telemetria completa (Mem, Disk, WAL).                |
+| `GET`  | `/features`      | Lista todas as Feature Flags configuradas.           |
+| `POST` | `/features/{id}` | Cria ou atualiza uma flag (ex: `{"enabled": true}`). |
 
 ---
 
-## Configuration
+## ⚡ Decisões de Design (v2.0)
 
-Customize engine behavior via `LsmConfig`:
-
-```rust
-use lsm_kv_store::{LsmConfig, LsmEngine};
-use std::path::PathBuf;
-
-let config = LsmConfig {
-    memtable_max_size: 4 * 1024 * 1024,  // 4MB (default)
-    data_dir: PathBuf::from("./data"),
-};
-
-let engine = LsmEngine::new(config)?;
-```
+1.  **Inversão de Dependência:** O `LsmEngine` não gerencia mais arquivos diretamente; ele delega para `WriteAheadLog` e `SstableManager`, facilitando o mock para testes unitários.
+2.  **Robustez no Codec:** Centralizamos a serialização em `infra/codec.rs`, garantindo que todo o sistema utilize consistentemente _Little Endian_ e codificação de inteiros fixos.
+3.  **Performance:** Mantivemos o uso de **Bloom Filters** nas SSTables para evitar IO desnecessário em chaves inexistentes.
+4.  **Optimistic Locking:** O sistema de Feature Flags implementa controle de versão para evitar condições de corrida em atualizações concorrentes.
 
 ---
 
-## Performance Characteristics
+## 🗺️ Roadmap
 
-| Operation   | Complexity                  | Notes                               |
-| :---------- | :-------------------------- | :---------------------------------- |
-| Write (SET) | O(log n) + O(1) disk append | MemTable insert + WAL append        |
-| Delete      | O(log n) + O(1) disk append | Tombstone write                     |
-| Read (GET)  | O(log n) + O(k)             | MemTable lookup + k SSTable scans   |
-| Flush       | O(n log n)                  | Sort and write n records to SSTable |
-| Scan        | O(n × k)                    | Merge n records from k SSTables     |
-
-**Limitations (v1):**
-
-- ⚠️ **No compaction**: SSTable count grows unbounded (planned for v3-lts)
-- ⚠️ **Linear SSTable scan**: No internal index (planned for v2)
-- ⚠️ **Full scan for prefix search**: No range iterators (planned for v2)
+- [x] **Arquitetura SOLID** (Reestruturação completa de módulos)
+- [x] **Feature Flags System** (Gerenciamento dinâmico persistido no LSM)
+- [ ] **v2: Indexação Esparsa** (Reduzir tempo de busca em arquivos SST grandes)
+- [ ] **v3: Estratégia de Compactação** (Leveled Compaction para reduzir amplificação de leitura)
 
 ---
 
-## Roadmap
+## Licença
 
-This project follows a versioned roadmap with LTS (Long-Term Support) milestones for production-ready releases.
-
-| Version    | Status     | Focus                                             |
-| :--------- | :--------- | :------------------------------------------------ |
-| **v1**     | ✅ Current | Basic LSM-Tree KV store with CLI and REST API     |
-| v2         | 🔜 Planned | Efficient iterators and SSTable internal indexing |
-| **v3-lts** | 🏷️ LTS     | Compaction (first production-ready version)       |
-| v4         | 📋 Planned | Secondary indexes with posting lists              |
-| **v5-lts** | 🏷️ LTS     | Production-grade indexed queries                  |
-| **v6-lts** | 🏷️ LTS     | Multi-instance support with codec per instance    |
-| v7         | 📋 Future  | MongoDB-like document/collection layer            |
-| **v8-lts** | 🏷️ LTS     | Backup/restore and admin tooling                  |
-
-See [ROADMAP.md](ROADMAP.md) for detailed specifications and release criteria.
-
----
-
-## Development
-
-### Code Quality Tools
-
-```bash
-# Format code
-cargo fmt
-
-# Run linter
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Run tests with coverage
-cargo test -- --nocapture
-```
-
-### Benchmarks
-
-```bash
-cargo bench
-```
-
----
-
-## Technical Details
-
-### Data Model
-
-`LogRecord` (serialized via bincode):
-
-```rust
-pub struct LogRecord {
-    pub key: String,
-    pub value: Vec<u8>,
-    pub timestamp: u128,    // Nanoseconds since UNIX_EPOCH
-    pub is_deleted: bool,   // Tombstone flag
-}
-```
-
-### SSTable Format
-
-```
-┌─────────────────────────────────┐
-│ Magic Number (u64)              │  8 bytes
-├─────────────────────────────────┤
-│ Version (u32)                   │  4 bytes
-├─────────────────────────────────┤
-│ Bloom Filter Length (u32)       │  4 bytes
-│ Bloom Filter Data               │  variable
-├─────────────────────────────────┤
-│ Metadata Length (u32)           │  4 bytes
-│ Metadata (JSON)                 │  variable
-├─────────────────────────────────┤
-│ Record 1 Length (u32)           │  4 bytes
-│ Record 1 Data (bincode)         │  variable
-├─────────────────────────────────┤
-│ Record 2 Length (u32)           │
-│ Record 2 Data                   │
-│ ...                             │
-└─────────────────────────────────┘
-```
-
----
-
-## Contributing
-
-Contributions are welcome! Priority areas for v1 → v2 transition:
-
-- [ ] Compaction implementation (size-tiered or leveled)
-- [ ] SSTable sparse index for faster `get()`
-- [ ] Range/prefix iterators (merge-iterator pattern)
-- [ ] Checksum validation and corruption handling
-- [ ] Crash recovery testing
-
-**Contribution workflow:**
-
-1. Fork repository
-2. Create feature branch: `git checkout -b feature/my-feature`
-3. Commit changes with clear messages
-4. Run tests and linters
-5. Open Pull Request with detailed description
-
----
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## Acknowledgments
-
-Inspired by production LSM-based systems:
-
-- [LevelDB](https://github.com/google/leveldb) (Google)
-- [RocksDB](https://github.com/facebook/rocksdb) (Facebook/Meta)
-- [Bitcask](https://riak.com/assets/bitcask-intro.pdf) (Riak)
-
-Built with Rust for memory safety and zero-cost abstractions.
-
----
-
-**Project Status:** Active development (v1)
-**Maintainer:** Elio Neto
-**Repository:** [github.com/ElioNeto/lsm-kv-store](https://github.com/ElioNeto/lsm-kv-store)
+MIT License - veja [LICENSE](LICENSE) para detalhes.
