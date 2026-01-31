@@ -2,10 +2,11 @@ use actix_cors::Cors;
 use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Duration; // ADICIONAR
+use std::time::Duration;
 
-use crate::engine::LsmEngine;
-use crate::features::FeatureClient; // CORRIGIR (remover FeatureFlag)
+// CORREÇÃO: Importando do novo local core::engine
+use crate::core::engine::LsmEngine;
+use crate::features::FeatureClient;
 
 // Estado compartilhado entre threads
 pub struct AppState {
@@ -13,34 +14,30 @@ pub struct AppState {
     pub features: Arc<FeatureClient>,
 }
 
-// Request body para SET
+// Request/Response DTOs
 #[derive(Deserialize)]
 pub struct SetRequest {
     pub key: String,
     pub value: String,
 }
 
-// Request body para SET BATCH
 #[derive(Deserialize)]
 pub struct BatchSetRequest {
     pub records: Vec<SetRequest>,
 }
 
-// Request body para DELETE BATCH
 #[derive(Deserialize)]
 pub struct BatchDeleteRequest {
     pub keys: Vec<String>,
 }
 
-// Query params para busca
 #[derive(Deserialize)]
 pub struct SearchQuery {
-    pub q: String, // query string (substring)
+    pub q: String,
     #[serde(default)]
-    pub prefix: bool, // se true, busca por prefixo; se false, substring
+    pub prefix: bool,
 }
 
-// Response padrão
 #[derive(Serialize)]
 pub struct ApiResponse {
     pub success: bool,
@@ -49,7 +46,6 @@ pub struct ApiResponse {
     pub data: Option<serde_json::Value>,
 }
 
-// Request body para features
 #[derive(Deserialize)]
 pub struct SetFeatureRequest {
     pub enabled: bool,
@@ -57,7 +53,6 @@ pub struct SetFeatureRequest {
     pub description: String,
 }
 
-// Response para features
 #[derive(Serialize)]
 pub struct FeatureResponse {
     pub name: String,
@@ -65,7 +60,8 @@ pub struct FeatureResponse {
     pub description: String,
 }
 
-// GET /health - Healthcheck
+// ==================== HANDLERS ====================
+
 #[get("/health")]
 async fn health() -> impl Responder {
     HttpResponse::Ok().json(ApiResponse {
@@ -75,7 +71,6 @@ async fn health() -> impl Responder {
     })
 }
 
-// GET /stats - Estatísticas do engine
 #[get("/stats")]
 async fn get_stats(data: web::Data<AppState>) -> impl Responder {
     let stats = data.engine.stats();
@@ -86,23 +81,28 @@ async fn get_stats(data: web::Data<AppState>) -> impl Responder {
     })
 }
 
-// GET /stats/all - Estatísticas completas
 #[get("/stats/all")]
 async fn get_stats_all(data: web::Data<AppState>) -> impl Responder {
-    let stats = data.engine.stats_all();
-    HttpResponse::Ok().json(ApiResponse {
-        success: true,
-        message: "Stats retrieved".to_string(),
-        data: Some(serde_json::json!({ "stats": stats })),
-    })
+    match data.engine.stats_all() {
+        Ok(stats) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Stats retrieved".to_string(),
+            data: Some(serde_json::to_value(stats).unwrap_or_default()),
+        }),
+        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
+            success: false,
+            message: format!("Error: {}", e),
+            data: None,
+        }),
+    }
 }
 
-// GET /keys/{key} - Buscar valor por chave
 #[get("/keys/{key}")]
 async fn get_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
     let key = path.into_inner();
 
     match data.engine.get(&key) {
+        // CORREÇÃO: value é explicitamente Vec<u8> (Sized)
         Ok(Some(value)) => {
             let value_str = String::from_utf8_lossy(&value).to_string();
             HttpResponse::Ok().json(ApiResponse {
@@ -127,7 +127,6 @@ async fn get_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Res
     }
 }
 
-// POST /keys - Inserir ou atualizar chave
 #[post("/keys")]
 async fn set_key(req: web::Json<SetRequest>, data: web::Data<AppState>) -> impl Responder {
     let value_bytes = req.value.as_bytes().to_vec();
@@ -146,7 +145,6 @@ async fn set_key(req: web::Json<SetRequest>, data: web::Data<AppState>) -> impl 
     }
 }
 
-// POST /keys/batch - Inserir múltiplas chaves
 #[post("/keys/batch")]
 async fn set_batch(req: web::Json<BatchSetRequest>, data: web::Data<AppState>) -> impl Responder {
     let records: Vec<(String, Vec<u8>)> = req
@@ -169,7 +167,6 @@ async fn set_batch(req: web::Json<BatchSetRequest>, data: web::Data<AppState>) -
     }
 }
 
-// DELETE /keys/{key} - Deletar chave
 #[delete("/keys/{key}")]
 async fn delete_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
     let key = path.into_inner();
@@ -188,35 +185,14 @@ async fn delete_key(path: web::Path<String>, data: web::Data<AppState>) -> impl 
     }
 }
 
-// DELETE /keys/batch - Deletar múltiplas chaves
-#[delete("/keys/batch")]
-async fn delete_batch(
-    req: web::Json<BatchDeleteRequest>,
-    data: web::Data<AppState>,
-) -> impl Responder {
-    match data.engine.delete_batch(req.keys.clone()) {
-        Ok(count) => HttpResponse::Ok().json(ApiResponse {
-            success: true,
-            message: format!("{} keys deleted successfully", count),
-            data: Some(serde_json::json!({ "count": count })),
-        }),
-        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
-            success: false,
-            message: format!("Error: {}", e),
-            data: None,
-        }),
-    }
-}
-
-// GET /keys - Listar todas as chaves (FILTRADO - sem feature:*)
 #[get("/keys")]
 async fn list_keys(data: web::Data<AppState>) -> impl Responder {
+    // CORREÇÃO: Tipagem explícita para evitar erro de inferência
     match data.engine.keys() {
         Ok(keys) => {
-            // Filtrar chaves que começam com "feature:"
             let filtered_keys: Vec<String> = keys
                 .into_iter()
-                .filter(|k| !k.starts_with("feature:"))
+                .filter(|k: &String| !k.starts_with("feature:"))
                 .collect();
 
             HttpResponse::Ok().json(ApiResponse {
@@ -233,7 +209,6 @@ async fn list_keys(data: web::Data<AppState>) -> impl Responder {
     }
 }
 
-// GET /keys/search?q=...&prefix=false - Buscar por substring/prefixo
 #[get("/keys/search")]
 async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) -> impl Responder {
     let results = if query.prefix {
@@ -244,9 +219,10 @@ async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) 
 
     match results {
         Ok(records) => {
+            // CORREÇÃO: Tipagem explícita (String, Vec<u8>)
             let records_json: Vec<serde_json::Value> = records
                 .into_iter()
-                .map(|(k, v)| {
+                .map(|(k, v): (String, Vec<u8>)| {
                     serde_json::json!({
                         "key": k,
                         "value": String::from_utf8_lossy(&v).to_string()
@@ -268,16 +244,15 @@ async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) 
     }
 }
 
-// GET /scan - Retornar todos os dados (FILTRADO - sem feature:*)
 #[get("/scan")]
 async fn scan_all(data: web::Data<AppState>) -> impl Responder {
     match data.engine.scan() {
         Ok(records) => {
-            // Filtrar registros com chave feature:*
+            // CORREÇÃO: Tipagem explícita no filter e map
             let records_json: Vec<serde_json::Value> = records
                 .into_iter()
-                .filter(|(k, _)| !k.starts_with("feature:"))
-                .map(|(k, v)| {
+                .filter(|(k, _): &(String, Vec<u8>)| !k.starts_with("feature:"))
+                .map(|(k, v): (String, Vec<u8>)| {
                     serde_json::json!({
                         "key": k,
                         "value": String::from_utf8_lossy(&v).to_string()
@@ -299,9 +274,8 @@ async fn scan_all(data: web::Data<AppState>) -> impl Responder {
     }
 }
 
-// ==================== FEATURE FLAGS ENDPOINTS ====================
+// ==================== FEATURE FLAGS ====================
 
-// GET /features - Listar todas as features
 #[get("/features")]
 async fn list_features(data: web::Data<AppState>) -> impl Responder {
     match data.features.list_all() {
@@ -333,29 +307,6 @@ async fn list_features(data: web::Data<AppState>) -> impl Responder {
     }
 }
 
-// GET /features/{name} - Verificar se uma feature está habilitada
-#[get("/features/{name}")]
-async fn get_feature(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
-    let name = path.into_inner();
-
-    match data.features.is_enabled(&name) {
-        Ok(enabled) => HttpResponse::Ok().json(ApiResponse {
-            success: true,
-            message: "Feature retrieved".to_string(),
-            data: Some(serde_json::json!({
-                "name": name,
-                "enabled": enabled
-            })),
-        }),
-        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
-            success: false,
-            message: format!("Error: {}", e),
-            data: None,
-        }),
-    }
-}
-
-// POST /features/{name} - Criar ou atualizar feature
 #[post("/features/{name}")]
 async fn set_feature(
     path: web::Path<String>,
@@ -363,18 +314,14 @@ async fn set_feature(
     data: web::Data<AppState>,
 ) -> impl Responder {
     let name = path.into_inner();
-
     match data
         .features
         .set_flag(name.clone(), req.enabled, Some(req.description.clone()))
     {
         Ok(_) => HttpResponse::Ok().json(ApiResponse {
             success: true,
-            message: format!("Feature '{}' updated successfully", name),
-            data: Some(serde_json::json!({
-                "name": name,
-                "enabled": req.enabled
-            })),
+            message: format!("Feature '{}' updated", name),
+            data: None,
         }),
         Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
             success: false,
@@ -384,71 +331,22 @@ async fn set_feature(
     }
 }
 
-// DELETE /features/{name} - Remover feature
-#[delete("/features/{name}")]
-async fn delete_feature(path: web::Path<String>, data: web::Data<AppState>) -> impl Responder {
-    let name = path.into_inner();
+// ==================== SERVER START ====================
 
-    match data.features.remove_flag(&name) {
-        Ok(removed) => {
-            if removed {
-                HttpResponse::Ok().json(ApiResponse {
-                    success: true,
-                    message: format!("Feature '{}' deleted successfully", name),
-                    data: None,
-                })
-            } else {
-                HttpResponse::NotFound().json(ApiResponse {
-                    success: false,
-                    message: format!("Feature '{}' not found", name),
-                    data: None,
-                })
-            }
-        }
-        Err(e) => HttpResponse::InternalServerError().json(ApiResponse {
-            success: false,
-            message: format!("Error: {}", e),
-            data: None,
-        }),
-    }
-}
-
-// Inicia o servidor HTTP
 pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::Result<()> {
     let engine = Arc::new(engine);
     let features = Arc::new(FeatureClient::new(
         Arc::clone(&engine),
-        Duration::from_secs(10), // Cache de 10 segundos
+        Duration::from_secs(10),
     ));
 
-    println!(
-        "\n🚀 LSM-Tree REST API iniciando em http://{}:{}",
-        host, port
-    );
-    println!("\n📚 Documentação:");
-    println!("  GET  /health            - Healthcheck");
-    println!("  GET  /stats             - Estatísticas");
-    println!("  GET  /stats_all         - Estatísticas completas");
-    println!("  GET  /keys              - Listar chaves (exceto feature:*)");
-    println!("  GET  /keys/{{key}}        - Buscar valor");
-    println!("  GET  /keys/search?q=... - Buscar por substring/prefixo");
-    println!("  POST /keys              - Inserir/atualizar");
-    println!("  POST /keys/batch        - Inserir múltiplos");
-    println!("  DELETE /keys/{{key}}     - Deletar chave");
-    println!("  DELETE /keys/batch      - Deletar múltiplas");
-    println!("  GET  /scan              - Scan completo (exceto feature:*)");
-    println!("\n🚩 Feature Flags:");
-    println!("  GET    /features        - Listar todas as features");
-    println!("  GET    /features/{{name}} - Verificar feature");
-    println!("  POST   /features/{{name}} - Criar/atualizar feature");
-    println!("  DELETE /features/{{name}} - Remover feature");
+    println!("🚀 API em http://{}:{}", host, port);
 
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
-            .allow_any_header()
-            .max_age(3600);
+            .allow_any_header();
 
         App::new()
             .wrap(cors)
@@ -456,24 +354,17 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
                 engine: Arc::clone(&engine),
                 features: Arc::clone(&features),
             }))
-            .app_data(web::JsonConfig::default().limit(20 * 1024 * 1024))
-            // Endpoints gerais
             .service(health)
             .service(get_stats)
             .service(get_stats_all)
-            .service(search_keys)
             .service(get_key)
             .service(set_key)
             .service(set_batch)
-            .service(delete_key)
-            .service(delete_batch)
             .service(list_keys)
+            .service(search_keys)
             .service(scan_all)
-            // Feature flags
             .service(list_features)
-            .service(get_feature)
             .service(set_feature)
-            .service(delete_feature)
     })
     .bind((host, port))?
     .run()

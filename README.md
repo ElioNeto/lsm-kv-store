@@ -2,158 +2,116 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
-[![CI Status](https://img.shields.io/github/actions/workflow/status/ElioNeto/lsm-kv-store/rust.yml?style=flat-square&label=build)](https://github.com/ElioNeto/lsm-kv-store/actions)
 
-> **A high-performance, embedded key-value store written in Rust.**
+> **A high-performance, embedded key-value store written in Rust, now featuring a modular SOLID architecture.**
 
-This project is an implementation of the **Log-Structured Merge-Tree (LSM-Tree)** architecture, designed to provide high write throughput with strong durability guarantees. It serves as a study on database internals, storage engines, and system design patterns used in production systems like RocksDB and LevelDB.
+This project is an implementation of the **Log-Structured Merge-Tree (LSM-Tree)** architecture, focused on high write throughput and durability. Recently, the project was restructured following **SOLID** principles to ensure testability, separation of concerns, and ease of maintenance.
 
 ---
 
-## 🏗 Architecture
+## 🏗 Architecture & Design
 
-The storage engine follows a standard LSM-Tree architecture with a Write-Ahead Log (WAL) for durability and SSTables for disk storage.
+The engine now uses a modular design where each component has a single responsibility, making it easy to swap implementations (e.g., replace Bincode with Protobuf or BTreeMap with SkipList).
 
 ```mermaid
 graph TD
-    subgraph Client Layer
+    subgraph Interface_Layer
         CLI[CLI / REPL]
         API[REST API]
     end
 
-    subgraph Storage Engine
-        Writer[Write Path]
-        Reader[Read Path]
-        
-        MemTable["MemTable<br/>(In-Memory BTreeMap)"]
-        WAL["Write-Ahead Log<br/>(Disk Append-Only)"]
-        SSTables["SSTables<br/>(Sorted String Tables)"]
-        Bloom[Bloom Filters]
+    subgraph Core_Domain
+        Engine[LSM Engine]
+        MemTable[MemTable]
+        LogRecord[LogRecord]
     end
 
-    CLI --> Writer & Reader
-    API --> Writer & Reader
+    subgraph Storage_Layer
+        WAL[Write-Ahead Log]
+        SST[SSTable Manager]
+    end
 
-    Writer -- 1. Append --> WAL
-    Writer -- 2. Insert --> MemTable
-    MemTable -- Flush (Threshold Reached) --> SSTables
-    
-    Reader -- 1. Query --> MemTable
-    Reader -- 2. Check Filter --> Bloom
-    Bloom -- 3. Scan (If present) --> SSTables
+    subgraph Infrastructure
+        Codec[Serialization]
+        Error[Error Handling]
+    end
+
+    CLI & API --> Engine
+    Engine --> WAL & MemTable
+    MemTable -- Flush --> SST
+    Engine -- Read --> MemTable & SST
 ```
 
-### Core Components
+### 📂 Folder Structure (SOLID)
 
-| Component | Description |
-|-----------|-------------|
-| **MemTable** | In-memory write buffer using `BTreeMap`. Provides $O(\log n)$ inserts and ordered iteration. |
-| **WAL** | Durable append-only log. Ensures data restoration in case of crash/power loss before a flush. |
-| **SSTables** | Immutable, on-disk sorted string tables. Created when MemTable exceeds size limits (4MB default). |
-| **Bloom Filters** | Probabilistic data structure attached to each SSTable to prevent expensive disk reads for non-existent keys. |
+| Directory       | Responsibility                                                        | Applied Principle               |
+| :-------------- | :-------------------------------------------------------------------- | :------------------------------ |
+| `src/core/`     | **The Brain.** Contains the Engine, MemTable, and record definitions. | **SRP** (Single Responsibility) |
+| `src/storage/`  | **Persistence.** Manages physical writes (WAL) and SSTable format.    | **DIP** (Dependency Inversion)  |
+| `src/infra/`    | **Utilities.** Global error handling and serialization logic.         | **Separation of Concerns**      |
+| `src/features/` | **Business Domain.** Feature Flag management with caching.            | **Modularity**                  |
+| `src/api/`      | **Transport.** Actix-Web REST server and handlers.                    | **Decoupling**                  |
+| `src/cli/`      | **Interface.** Interactive REPL implementation.                       | **Isolation**                   |
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Getting Started
 
 ### Prerequisites
 - Rust 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 
-### Installation & Run
+- Rust 1.70+
+
+### Installation & Execution
 
 ```bash
-# Clone and Build
+# Clone the repository
 git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
-cargo build --release
 
-# Run CLI Mode
-cargo run --release --bin lsm-kv-store
+# Interactive CLI Mode
+cargo run --release
 
-# Run Server Mode
-cargo run --release --bin lsm-server --features api
+# API Server Mode (with Feature Flags)
+cargo run --release --features api
 ```
 
 ---
 
-## ⚡ Performance & Complexity
+## 🌐 API & Feature Management
 
-This engine is optimized for **write-heavy workloads**.
+The API now includes native support for **Feature Flags**, allowing you to enable/disable functionality at runtime without restarting the database.
 
-| Operation | Time Complexity | IO Behavior |
-| :--- | :--- | :--- |
-| **Write (SET)** | $O(\log N)$ | Memory operation + 1 Append (WAL) |
-| **Read (GET)** | $O(K \cdot \log M)$ | Memory lookup + (Potential) Disk Seek per SSTable |
-| **Flush** | $O(N)$ | Sequential Write (High throughput) |
+### Main Endpoints
 
-> *Note: $N$ = MemTable size, $K$ = Number of SSTables, $M$ = SSTable size.*
-
-### Design Decisions
-*   **Why BTreeMap instead of SkipList?**
-    *   While RocksDB uses SkipLists for concurrent writes, Rust's standard `BTreeMap` is highly optimized for cache locality and offers excellent single-threaded performance for this v1 implementation.
-*   **Why JSON over gRPC?**
-    *   For v1, a REST API provides simpler debuggability and easier integration with the provided demo frontend/curl.
+| Method | Endpoint         | Description                                         |
+| :----- | :--------------- | :-------------------------------------------------- |
+| `GET`  | `/keys/{key}`    | Retrieves a value by key.                           |
+| `POST` | `/keys`          | Inserts or updates a key-value pair.                |
+| `GET`  | `/stats/all`     | Full telemetry (Memory, Disk, WAL).                 |
+| `GET`  | `/features`      | Lists all configured Feature Flags.                 |
+| `POST` | `/features/{id}` | Creates or updates a flag (e.g., `{"enabled": true}`). |
 
 ---
 
-## 🛠 API & Commands
+## ⚡ Design Decisions (v2.0)
 
-<details>
-<summary><strong>💻 CLI Commands (Click to expand)</strong></summary>
-
-| Command | Description |
-|:---|:---|
-| `SET <key> <value>` | Insert or update a key-value pair. |
-| `GET <key>` | Retrieve value. Returns `Key not found` if missing. |
-| `DELETE <key>` | Mark key as deleted (Tombstone). |
-| `SCAN <prefix>` | List records starting with prefix. |
-| `STATS` | Show internal engine metrics (MemTable size, SST count). |
-| `BATCH <n>` | Insert `n` random records for benchmarking. |
-
-</details>
-
-<details>
-<summary><strong>🌐 REST API Endpoints (Click to expand)</strong></summary>
-
-Server runs on `http://127.0.0.1:8080`
-
-| Method | Endpoint | Body/Query | Description |
-|:---|:---|:---|:---|
-| `GET` | `/keys/{key}` | - | Get value for key |
-| `POST` | `/keys` | `{"key": "user:1", "value": "data"}` | Insert/Update key |
-| `DELETE` | `/keys/{key}` | - | Delete key |
-| `GET` | `/keys/search` | `?q=usr&prefix=true` | Search by prefix |
-| `GET` | `/stats_all` | - | Full engine telemetry |
-
-</details>
+1. **Dependency Inversion:** `LsmEngine` no longer manages files directly; it delegates to `WriteAheadLog` and `SstableManager`, making unit testing easier with mocks.  
+2. **Codec Robustness:** Serialization is centralized in `infra/codec.rs`, ensuring consistent use of _Little Endian_ and fixed-width integer encoding.  
+3. **Performance:** Bloom Filters are used in SSTables to avoid unnecessary IO for non-existent keys.  
+4. **Optimistic Locking:** The Feature Flags system implements version control to prevent race conditions during concurrent updates.  
 
 ---
 
-## 🗺️ Roadmap
+## 🗺 Roadmap
 
-This project is evolving from a concept to a production-hardened engine.
-
-- [x] **v1: Core Engine** (WAL, MemTable, Basic SSTables, Bloom Filters)
-- [ ] **v2: Read Optimization** (Sparse Indexing & Block Caching)
-- [ ] **v3: Compaction Strategy** (Leveled Compaction to reduce read amplification)
-- [ ] **v4: Concurrency** (Lock-free MemTable via Crossbeam/SkipList)
-
-See [ROADMAP.md](ROADMAP.md) for detailed milestones.
+- [x] **SOLID Architecture** (Complete module restructuring)  
+- [x] **Feature Flags System** (Dynamic management persisted in LSM)  
+- [ ] **v2: Sparse Indexing** (Reduce lookup time in large SST files)  
+- [ ] **v3: Compaction Strategy** (Leveled Compaction to reduce read amplification)  
 
 ---
-
-## 📂 File Structure
-
-```
-src/
-├── engine.rs      # High-level entry point (facade pattern)
-├── memtable.rs    # In-memory storage abstraction
-├── wal.rs         # Append-only log management
-├── sstable.rs     # Disk storage format & IO
-├── codec.rs       # Serialization (Bincode)
-└── bin/           # Executables (CLI & Server)
-```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - veja [LICENSE](LICENSE) para detalhes.

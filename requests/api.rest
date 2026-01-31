@@ -4,8 +4,8 @@
 ### ============================================================================
 
 ### Variáveis globais
-@baseUrl = http://localhost:8080
-#@baseUrl = https://steadfast-connection-dev.up.railway.app
+#@baseUrl = http://localhost:8080
+@baseUrl = https://steadfast-connection-dev.up.railway.app
 @contentType = application/json
 
 ### ============================================================================
@@ -32,8 +32,8 @@ POST {{baseUrl}}/keys
 Content-Type: {{contentType}}
 
 {
-    "key": "user:texuguito2",
-    "value": "Texugo Limão"
+    "key": "feature:user:texuguito",
+    "value":  "{\"name\":\"Elio Neto\",\"email\":\"netoo.elio@hotmail.com\"}"
 }
 
 ###
@@ -52,7 +52,7 @@ Content-Type: {{contentType}}
 
 ### Buscar chave específica
 # @name getKey
-GET {{baseUrl}}/keys/user:alice
+GET {{baseUrl}}/keys/feature:user:texuguito
 
 ###
 
