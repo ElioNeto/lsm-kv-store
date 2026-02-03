@@ -45,7 +45,7 @@ impl LsmEngine {
         for entry in std::fs::read_dir(&config.core.dir_path)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "sst") {
+            if path.extension().is_some_and(|ext| ext == "sst") {
                 match SStable::load(&path) {
                     Ok(sst) => sstables.push(sst),
                     Err(e) => warn!("Failed to load SSTable {}: {}", path.display(), e),
