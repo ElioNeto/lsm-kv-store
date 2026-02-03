@@ -1,2 +1,3 @@
-pub mod wal;
+pub mod block;
 pub mod sstable;
+pub mod wal;
