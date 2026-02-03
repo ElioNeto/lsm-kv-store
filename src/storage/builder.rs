@@ -4,14 +4,13 @@ use crate::infra::config::StorageConfig;
 use crate::infra::error::{LsmError, Result};
 use crate::storage::block::Block;
 use bloomfilter::Bloom;
-use lz4_flex::{compress_prepend_size, decompress_size_prepended};
+use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const SST_MAGIC_V2: &[u8; 8] = b"LSMSST02";
-const FOOTER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockMeta {
@@ -42,6 +41,7 @@ pub struct SstableBuilder {
     last_key: Option<Vec<u8>>,
     record_count: u64,
     path: PathBuf,
+    timestamp: u128,
 }
 
 impl SstableBuilder {
@@ -65,6 +65,7 @@ impl SstableBuilder {
             last_key: None,
             record_count: 0,
             path,
+            timestamp,
         })
     }
 
@@ -155,10 +156,7 @@ impl SstableBuilder {
             min_key: self.first_key.unwrap(),
             max_key: self.last_key.unwrap(),
             record_count: self.record_count,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            timestamp: self.timestamp,
         };
 
         let meta_encoded = encode(&meta_block)?;
@@ -194,20 +192,14 @@ impl SstableBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::log_record::LogRecordType;
-    use tempfile::tempdir;
 
     fn create_test_record(key: &str, value: &[u8]) -> LogRecord {
-        LogRecord {
-            key: key.to_string(),
-            value: Some(value.to_vec()),
-            record_type: LogRecordType::Normal,
-        }
+        LogRecord::new(key.to_string(), value.to_vec())
     }
 
     #[test]
     fn test_builder_basic() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.sst");
         let config = StorageConfig::default();
 
@@ -224,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_builder_multiple_blocks() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test_multi.sst");
         let mut config = StorageConfig::default();
         config.block_size = 256;
@@ -243,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_builder_empty_fails() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.sst");
         let config = StorageConfig::default();
 
@@ -255,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_builder_large_entry() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.sst");
         let config = StorageConfig::default();
 
