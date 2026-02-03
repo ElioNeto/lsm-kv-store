@@ -25,18 +25,18 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .unwrap_or(8080);
 
-    // Configurar engine
-    let config = LsmConfig {
-        memtable_max_size: 4 * 1024 * 1024, // 4MB
-        data_dir: PathBuf::from(data_dir),
-    };
+    // Configurar engine com estrutura modular
+    let config = LsmConfig::builder()
+        .dir_path(PathBuf::from(data_dir))
+        .memtable_max_size(4 * 1024 * 1024) // 4MB
+        .build();
 
     // Mostrar caminho absoluto do diretório de dados
-    match config.data_dir.canonicalize() {
+    match config.core.dir_path.canonicalize() {
         Ok(abs_path) => println!("📂 Diretório de dados: {}\n", abs_path.display()),
         Err(_) => println!(
             "📂 Diretório de dados: {} (será criado)\n",
-            config.data_dir.display()
+            config.core.dir_path.display()
         ),
     }
 
