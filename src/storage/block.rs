@@ -1,0 +1,233 @@
+use crate::StorageConfig;
+use std::mem::size_of;
+
+pub const BLOCK_SIZE: usize = 4096;
+const U16_SIZE: usize = size_of::<u16>();
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    data: Vec<u8>,
+    offsets: Vec<u16>,
+    block_size: usize,
+}
+
+impl Block {
+    pub fn from_config(config: &StorageConfig) -> Self {
+        Self::new(config.block_size)
+    }
+
+    pub fn new(block_size: usize) -> Self {
+        Self {
+            data: Vec::new(),
+            offsets: Vec::new(),
+            block_size,
+        }
+    }
+
+    fn entry_size(key: &[u8], value: &[u8]) -> usize {
+        U16_SIZE + key.len() + U16_SIZE + value.len()
+    }
+
+    fn metadata_size(num_entries: usize) -> usize {
+        (num_entries * U16_SIZE) + U16_SIZE
+    }
+
+    fn current_size(&self) -> usize {
+        self.data.len() + Self::metadata_size(self.offsets.len())
+    }
+
+    pub fn add(&mut self, key: &[u8], value: &[u8]) -> bool {
+        let entry_size = Self::entry_size(key, value);
+        let new_offset_size = U16_SIZE;
+        let total_needed = self.current_size() + entry_size + new_offset_size;
+
+        if total_needed > self.block_size {
+            return false;
+        }
+
+        let offset = self.data.len() as u16;
+        self.offsets.push(offset);
+
+        let key_len = key.len() as u16;
+        let val_len = value.len() as u16;
+
+        self.data.extend_from_slice(&key_len.to_le_bytes());
+        self.data.extend_from_slice(key);
+        self.data.extend_from_slice(&val_len.to_le_bytes());
+        self.data.extend_from_slice(value);
+
+        true
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(self.current_size());
+        encoded.extend_from_slice(&self.data);
+
+        for &offset in &self.offsets {
+            encoded.extend_from_slice(&offset.to_le_bytes());
+        }
+
+        let num_elements = self.offsets.len() as u16;
+        encoded.extend_from_slice(&num_elements.to_le_bytes());
+
+        encoded
+    }
+
+    pub fn decode(data: &[u8]) -> Self {
+        if data.len() < U16_SIZE {
+            return Self {
+                data: Vec::new(),
+                offsets: Vec::new(),
+                block_size: BLOCK_SIZE,
+            };
+        }
+
+        let num_elements_start = data.len() - U16_SIZE;
+        let num_elements =
+            u16::from_le_bytes([data[num_elements_start], data[num_elements_start + 1]]) as usize;
+
+        let offsets_start = data.len() - U16_SIZE - (num_elements * U16_SIZE);
+        let records_data = data[..offsets_start].to_vec();
+
+        let mut offsets = Vec::with_capacity(num_elements);
+        let mut offset_pos = offsets_start;
+
+        for _ in 0..num_elements {
+            let offset = u16::from_le_bytes([data[offset_pos], data[offset_pos + 1]]);
+            offsets.push(offset);
+            offset_pos += U16_SIZE;
+        }
+
+        Self {
+            data: records_data,
+            offsets,
+            block_size: BLOCK_SIZE,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.offsets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
+    }
+
+    pub fn data_size(&self) -> usize {
+        self.data.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_block_is_empty() {
+        let block = Block::new(BLOCK_SIZE);
+        assert_eq!(block.len(), 0);
+        assert!(block.is_empty());
+        assert_eq!(block.data_size(), 0);
+    }
+
+    #[test]
+    fn test_add_single_entry() {
+        let mut block = Block::new(BLOCK_SIZE);
+        let key = b"test_key";
+        let value = b"test_value";
+        let success = block.add(key, value);
+        assert!(success, "Should successfully add entry");
+        assert_eq!(block.len(), 1);
+        assert!(!block.is_empty());
+    }
+
+    #[test]
+    fn test_add_multiple_entries() {
+        let mut block = Block::new(BLOCK_SIZE);
+        for i in 0..10 {
+            let key = format!("key_{:03}", i);
+            let value = format!("value_{:03}", i);
+            let success = block.add(key.as_bytes(), value.as_bytes());
+            assert!(success, "Should add entry {}", i);
+        }
+        assert_eq!(block.len(), 10);
+    }
+
+    #[test]
+    fn test_add_until_full() {
+        let mut block = Block::new(256);
+        let mut added_count = 0;
+
+        for i in 0..100 {
+            let key = format!("k{}", i);
+            let value = format!("v{}", i);
+            if block.add(key.as_bytes(), value.as_bytes()) {
+                added_count += 1;
+            } else {
+                break;
+            }
+        }
+
+        assert!(added_count > 0, "Should have added at least one entry");
+        assert!(
+            added_count < 100,
+            "Should not have added all entries (block is full)"
+        );
+
+        let result = block.add(b"extra_key", b"extra_value");
+        assert!(!result, "Should reject entry when block is full");
+    }
+
+    #[test]
+    fn test_overflow_large_entry() {
+        let mut block = Block::new(128);
+        let large_key = vec![b'x'; 100];
+        let large_value = vec![b'y'; 100];
+        let result = block.add(&large_key, &large_value);
+        assert!(!result, "Should reject oversized entry");
+        assert_eq!(block.len(), 0, "Block should remain empty");
+    }
+
+    #[test]
+    fn test_encode_decode_empty_block() {
+        let block = Block::new(BLOCK_SIZE);
+        let encoded = block.encode();
+        let decoded = Block::decode(&encoded);
+        assert_eq!(decoded.len(), 0);
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_encode_decode_single_entry() {
+        let mut block = Block::new(BLOCK_SIZE);
+        block.add(b"key1", b"value1");
+        let encoded = block.encode();
+        let decoded = Block::decode(&encoded);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded.data_size(), block.data_size());
+        assert_eq!(decoded.data, block.data);
+        assert_eq!(decoded.offsets, block.offsets);
+    }
+
+    #[test]
+    fn test_encode_decode_multiple_entries() {
+        let mut block = Block::new(BLOCK_SIZE);
+        let entries = vec![
+            (b"apple" as &[u8], b"red" as &[u8]),
+            (b"banana", b"yellow"),
+            (b"cherry", b"red"),
+            (b"date", b"brown"),
+            (b"elderberry", b"purple"),
+        ];
+
+        for (key, value) in &entries {
+            assert!(block.add(key, value));
+        }
+
+        let encoded = block.encode();
+        let decoded = Block::decode(&encoded);
+        assert_eq!(decoded.len(), entries.len());
+        assert_eq!(decoded.data, block.data);
+        assert_eq!(decoded.offsets, block.offsets);
+    }
+}

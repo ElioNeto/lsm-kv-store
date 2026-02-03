@@ -1,16 +1,13 @@
 use crate::core::log_record::LogRecord;
 use crate::infra::codec::{decode, encode};
+use crate::infra::config::StorageConfig;
 use crate::infra::error::{LsmError, Result};
-
 use bloomfilter::Bloom;
 use crc32fast;
-
 use serde::{Deserialize, Serialize};
-
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-
 use tracing::debug;
 
 const SST_MAGIC: &[u8; 8] = b"LSMSST01";
@@ -55,6 +52,7 @@ impl SStable {
     pub fn create(
         dir_path: &Path,
         timestamp: u128,
+        config: &StorageConfig,
         records: &[(String, LogRecord)],
     ) -> Result<Self> {
         if records.is_empty() {
@@ -65,13 +63,11 @@ impl SStable {
 
         let path = dir_path.join(format!("{timestamp}.sst"));
         let mut file = BufWriter::new(File::create(&path)?);
-
-        // Header (magic/version)
         file.write_all(SST_MAGIC)?;
 
-        // 1) Bloom filter
-        let mut bloom = Bloom::<[u8]>::new_for_fp_rate(records.len(), 0.01)
-            .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
+        let mut bloom =
+            Bloom::<[u8]>::new_for_fp_rate(records.len(), config.bloom_false_positive_rate)
+                .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
 
         for (key, _) in records.iter() {
             bloom.set(key.as_bytes());
@@ -207,8 +203,7 @@ impl SStable {
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         let mut bloom_data = vec![0u8; bloom_len];
         file.read_exact(&mut bloom_data)?;
-        let bloom = Bloom::<[u8]>::from_bytes(bloom_data)
-            .map_err(|_| LsmError::InvalidSstable)?;
+        let bloom = Bloom::<[u8]>::from_bytes(bloom_data).map_err(|_| LsmError::InvalidSstable)?;
 
         // Metadata
         file.read_exact(&mut len_buf)?;
@@ -256,9 +251,9 @@ impl SStable {
 
         // 2. Binary search on sparse index using partition_point
         // Find the first block where first_key > search_key
-        let block_idx = self.index.partition_point(|block_meta| {
-            block_meta.first_key.as_str() <= key
-        });
+        let block_idx = self
+            .index
+            .partition_point(|block_meta| block_meta.first_key.as_str() <= key);
 
         // Edge case: key is smaller than the first key of the first block
         if block_idx == 0 {
@@ -361,9 +356,18 @@ mod tests {
         let timestamp = 67890u128;
 
         let records: Vec<(String, LogRecord)> = vec![
-            ("apple".to_string(), LogRecord::new("apple".to_string(), b"a".to_vec())),
-            ("banana".to_string(), LogRecord::new("banana".to_string(), b"b".to_vec())),
-            ("cherry".to_string(), LogRecord::new("cherry".to_string(), b"c".to_vec())),
+            (
+                "apple".to_string(),
+                LogRecord::new("apple".to_string(), b"a".to_vec()),
+            ),
+            (
+                "banana".to_string(),
+                LogRecord::new("banana".to_string(), b"b".to_vec()),
+            ),
+            (
+                "cherry".to_string(),
+                LogRecord::new("cherry".to_string(), b"c".to_vec()),
+            ),
         ];
 
         let mut sstable = SStable::create(dir.path(), timestamp, &records).unwrap();

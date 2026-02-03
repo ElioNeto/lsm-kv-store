@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use crate::core::engine::LsmEngine;
 use crate::infra::error::{LsmError, Result};
 
-/// Configuração de uma feature flag individual
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlag {
     pub enabled: bool,
@@ -41,9 +40,7 @@ impl FeatureClient {
         }
     }
 
-    /// Carrega todas as features (utilizando cache se disponível e válido)
     fn load_features(&self) -> Result<Features> {
-        // 1. Verificar cache
         {
             let cache = self.cache.read().unwrap();
             if let Some((features, timestamp)) = cache.as_ref() {
@@ -53,12 +50,9 @@ impl FeatureClient {
             }
         }
 
-        // 2. Cache miss ou expirado - carregar do engine
-        // O engine.get retorna Result<Option<Vec<u8>>>
         let bytes_vec = match self.engine.get(Self::KEY)? {
             Some(v) => v,
             None => {
-                // Primeira vez - criar estrutura vazia e persistir
                 let features = Features::default();
                 let json = serde_json::to_vec(&features)
                     .map_err(|e| LsmError::SerializationFailed(e.to_string()))?;
@@ -67,24 +61,20 @@ impl FeatureClient {
             }
         };
 
-        // Desserializar a partir do slice do Vec (conhecido em tempo de compilação)
         let features: Features = serde_json::from_slice(&bytes_vec)
             .map_err(|e| LsmError::DeserializationFailed(e.to_string()))?;
 
-        // 3. Atualizar cache
         let mut cache = self.cache.write().unwrap();
         *cache = Some((features.clone(), Instant::now()));
 
         Ok(features)
     }
 
-    /// Invalida o cache atual
     fn invalidate_cache(&self) {
         let mut cache = self.cache.write().unwrap();
         *cache = None;
     }
 
-    /// Verifica se uma feature está habilitada
     pub fn is_enabled(&self, flag_name: &str) -> Result<bool> {
         let features = self.load_features()?;
         Ok(features
@@ -94,23 +84,19 @@ impl FeatureClient {
             .unwrap_or(false))
     }
 
-    /// Lista todas as features cadastradas
     pub fn list_all(&self) -> Result<Features> {
         self.load_features()
     }
 
-    /// Atualiza uma feature flag específica (com optimistic locking via versão)
     pub fn set_flag(
         &self,
         flag_name: String,
         enabled: bool,
         description: Option<String>,
     ) -> Result<()> {
-        // Retry com loop para lidar com concorrência simples
         for attempt in 0..5 {
             let mut features = self.load_features()?;
 
-            // Atualizar ou criar flag
             features
                 .flags
                 .entry(flag_name.clone())
@@ -127,7 +113,6 @@ impl FeatureClient {
 
             features.version += 1;
 
-            // Serializar e salvar no engine
             let json = serde_json::to_vec(&features)
                 .map_err(|e| LsmError::SerializationFailed(e.to_string()))?;
 
@@ -137,7 +122,6 @@ impl FeatureClient {
                     return Ok(());
                 }
                 Err(_) if attempt < 4 => {
-                    // Backoff exponencial simples antes de tentar novamente
                     std::thread::sleep(Duration::from_millis(10 * 2u64.pow(attempt)));
                     continue;
                 }
@@ -148,7 +132,6 @@ impl FeatureClient {
         Err(LsmError::ConcurrentModification)
     }
 
-    /// Remove uma feature flag permanentemente
     pub fn remove_flag(&self, flag_name: &str) -> Result<bool> {
         let mut features = self.load_features()?;
         let removed = features.flags.remove(flag_name).is_some();

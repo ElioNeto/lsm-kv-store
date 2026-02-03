@@ -1,6 +1,6 @@
 name: "Task"
 description: "Template for creating a new project task"
-title: "[TASK] <short name here>"
+title: ""
 labels: ["task"]
 assignees: []
 

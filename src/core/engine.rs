@@ -1,6 +1,7 @@
 use crate::core::log_record::LogRecord;
 use crate::core::memtable::MemTable;
 use crate::infra::codec::decode;
+use crate::infra::config::LsmConfig;
 use crate::infra::error::{LsmError, Result};
 use crate::storage::sstable::SStable;
 use crate::storage::wal::WriteAheadLog;
@@ -12,21 +13,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::{info, warn};
-
-#[derive(Clone, Debug)]
-pub struct LsmConfig {
-    pub memtable_max_size: usize,
-    pub data_dir: PathBuf,
-}
-
-impl Default for LsmConfig {
-    fn default() -> Self {
-        Self {
-            memtable_max_size: 4 * 1024 * 1024, // 4 MB
-            data_dir: PathBuf::from("./.lsm_data"),
-        }
-    }
-}
 
 #[derive(Serialize)]
 pub struct LsmStats {
@@ -49,15 +35,14 @@ pub struct LsmEngine {
 }
 
 impl LsmEngine {
-    /// Inicializa um novo motor LSM
     pub fn new(config: LsmConfig) -> Result<Self> {
-        std::fs::create_dir_all(&config.data_dir)?;
+        std::fs::create_dir_all(&config.core.dir_path)?;
 
-        let wal = WriteAheadLog::new(&config.data_dir)?;
+        let wal = WriteAheadLog::new(&config.core.dir_path)?;
         let wal_records = wal.recover()?;
 
         let mut sstables = Vec::new();
-        for entry in std::fs::read_dir(&config.data_dir)? {
+        for entry in std::fs::read_dir(&config.core.dir_path)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "sst") {
@@ -68,10 +53,9 @@ impl LsmEngine {
             }
         }
 
-        // Ordenar SSTables da mais recente para a mais antiga (timestamp desc)
         sstables.sort_by(|a, b| b.metadata.timestamp.cmp(&a.metadata.timestamp));
 
-        let mut memtable = MemTable::new(config.memtable_max_size);
+        let mut memtable = MemTable::new(config.core.memtable_max_size);
         for record in wal_records {
             memtable.insert(record);
         }
@@ -86,7 +70,7 @@ impl LsmEngine {
             memtable: Mutex::new(memtable),
             wal,
             sstables: Mutex::new(sstables),
-            dir_path: config.data_dir.clone(),
+            dir_path: config.core.dir_path.clone(),
             config,
         })
     }
@@ -103,7 +87,6 @@ impl LsmEngine {
             .map_err(|_| LsmError::LockPoisoned("sstables"))
     }
 
-    /// Insere ou atualiza um par chave-valor
     pub fn set(&self, key: String, value: Vec<u8>) -> Result<()> {
         let record = LogRecord::new(key, value);
         self.wal.write_record(&record)?;
@@ -119,7 +102,6 @@ impl LsmEngine {
         Ok(())
     }
 
-    /// Remove uma chave (insere um tombstone)
     pub fn delete(&self, key: String) -> Result<()> {
         let record = LogRecord::tombstone(key);
         self.wal.write_record(&record)?;
@@ -135,9 +117,7 @@ impl LsmEngine {
         Ok(())
     }
 
-    /// Busca o valor associado a uma chave
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        // 1. Verificar MemTable (dados mais recentes)
         let memtable = self.memtable_lock()?;
         if let Some(record) = memtable.get(key) {
             return Ok(if record.is_deleted {
@@ -197,7 +177,6 @@ impl LsmEngine {
             .collect())
     }
 
-    /// Move os dados da MemTable para uma nova SSTable no disco
     fn flush(&self) -> Result<()> {
         let mut memtable = self.memtable_lock()?;
         let records: Vec<(String, LogRecord)> = memtable
@@ -211,10 +190,8 @@ impl LsmEngine {
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
-        // 1. Criar SSTable e garantir persistência física (fsync)
-        let sst = SStable::create(&self.dir_path, timestamp, &records)?;
+        let sst = SStable::create(&self.dir_path, timestamp, &self.config.storage, &records)?;
 
-        // 2. Adicionar à lista de SSTables e limpar MemTable
         let mut sstables = self.sstables_lock()?;
         sstables.insert(0, sst);
         let cleared = memtable.clear();
@@ -228,17 +205,14 @@ impl LsmEngine {
         drop(memtable);
         drop(sstables);
 
-        // 3. Limpar WAL agora que os dados estão seguros na SSTable
         self.wal.clear()?;
 
         Ok(())
     }
 
-    /// Retorna todos os registros ativos (não deletados) ordenados por chave
     pub fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let mut result_map: HashMap<String, (Vec<u8>, u128, bool)> = HashMap::new();
 
-        // 1) MemTable
         let memtable = self.memtable_lock()?;
         for (key, record) in memtable.iter_ordered() {
             result_map.insert(
@@ -248,12 +222,10 @@ impl LsmEngine {
         }
         drop(memtable);
 
-        // 2) SSTables
         let sstables = self.sstables_lock()?;
         for sst in sstables.iter() {
             let records = self.read_all_from_sstable(sst)?;
             for record in records {
-                // Só insere se a chave não existir (prioridade para dados mais recentes já inseridos)
                 result_map.entry(record.key.clone()).or_insert((
                     record.value,
                     record.timestamp,
@@ -263,7 +235,6 @@ impl LsmEngine {
         }
         drop(sstables);
 
-        // 3) Filtrar deletados e ordenar
         let mut results: Vec<(String, Vec<u8>)> = result_map
             .into_iter()
             .filter_map(|(key, (value, _ts, is_deleted))| {
@@ -284,16 +255,14 @@ impl LsmEngine {
         use std::io::{BufReader, Read, Seek, SeekFrom};
 
         let mut file = BufReader::new(File::open(&sst.path)?);
-        file.seek(SeekFrom::Current(8))?; // Pular magic
+        file.seek(SeekFrom::Current(8))?;
 
         let mut len_buf = [0u8; 4];
 
-        // Pular Bloom
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(bloom_len as i64))?;
 
-        // Pular Metadata
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         file.seek(SeekFrom::Current(meta_len as i64))?;
@@ -364,7 +333,7 @@ impl LsmEngine {
             sst_kb: sst_bytes_total / 1024,
             wal_kb: wal_bytes / 1024,
             total_records: (mem_records as u64) + sst_records_total,
-            memtable_max_size: self.config.memtable_max_size / 1024,
+            memtable_max_size: self.config.core.memtable_max_size / 1024,
         })
     }
 }
