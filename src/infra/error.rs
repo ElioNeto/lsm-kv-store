@@ -28,6 +28,7 @@ pub enum LsmError {
 
     #[error("WAL corruption detected")]
     WalCorruption,
+
     #[error("Serialization failed: {0}")]
     SerializationFailed(String),
 
