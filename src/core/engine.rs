@@ -1,6 +1,7 @@
 use crate::core::log_record::LogRecord;
 use crate::core::memtable::MemTable;
 use crate::infra::codec::decode;
+use crate::infra::config::LsmConfig;
 use crate::infra::error::{LsmError, Result};
 use crate::storage::sstable::SStable;
 use crate::storage::wal::WriteAheadLog;
@@ -12,21 +13,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::{info, warn};
-
-#[derive(Clone, Debug)]
-pub struct LsmConfig {
-    pub memtable_max_size: usize,
-    pub data_dir: PathBuf,
-}
-
-impl Default for LsmConfig {
-    fn default() -> Self {
-        Self {
-            memtable_max_size: 4 * 1024 * 1024, // 4 MB
-            data_dir: PathBuf::from("./.lsm_data"),
-        }
-    }
-}
 
 #[derive(Serialize)]
 pub struct LsmStats {
@@ -51,13 +37,13 @@ pub struct LsmEngine {
 impl LsmEngine {
     /// Inicializa um novo motor LSM
     pub fn new(config: LsmConfig) -> Result<Self> {
-        std::fs::create_dir_all(&config.data_dir)?;
+        std::fs::create_dir_all(&config.core.dir_path)?;
 
-        let wal = WriteAheadLog::new(&config.data_dir)?;
+        let wal = WriteAheadLog::new(&config.core.dir_path)?;
         let wal_records = wal.recover()?;
 
         let mut sstables = Vec::new();
-        for entry in std::fs::read_dir(&config.data_dir)? {
+        for entry in std::fs::read_dir(&config.core.dir_path)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "sst") {
@@ -71,7 +57,7 @@ impl LsmEngine {
         // Ordenar SSTables da mais recente para a mais antiga (timestamp desc)
         sstables.sort_by(|a, b| b.metadata.timestamp.cmp(&a.metadata.timestamp));
 
-        let mut memtable = MemTable::new(config.memtable_max_size);
+        let mut memtable = MemTable::new(config.core.memtable_max_size);
         for record in wal_records {
             memtable.insert(record);
         }
@@ -86,7 +72,7 @@ impl LsmEngine {
             memtable: Mutex::new(memtable),
             wal,
             sstables: Mutex::new(sstables),
-            dir_path: config.data_dir.clone(),
+            dir_path: config.core.dir_path.clone(),
             config,
         })
     }
@@ -212,7 +198,7 @@ impl LsmEngine {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
         // 1. Criar SSTable e garantir persistência física (fsync)
-        let sst = SStable::create(&self.dir_path, timestamp, &records)?;
+        let sst = SStable::create(&self.dir_path, timestamp, &self.config.storage, &records)?;
 
         // 2. Adicionar à lista de SSTables e limpar MemTable
         let mut sstables = self.sstables_lock()?;
@@ -364,7 +350,7 @@ impl LsmEngine {
             sst_kb: sst_bytes_total / 1024,
             wal_kb: wal_bytes / 1024,
             total_records: (mem_records as u64) + sst_records_total,
-            memtable_max_size: self.config.memtable_max_size / 1024,
+            memtable_max_size: self.config.core.memtable_max_size / 1024,
         })
     }
 }
