@@ -149,8 +149,8 @@ impl LsmEngine {
         drop(memtable);
 
         // 2. Verificar SSTables (da mais recente para a mais antiga)
-        let sstables = self.sstables_lock()?;
-        for sst in sstables.iter() {
+        let mut sstables = self.sstables_lock()?;
+        for sst in sstables.iter_mut() {
             if let Some(record) = sst.get(key)? {
                 return Ok(if record.is_deleted {
                     None
