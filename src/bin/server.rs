@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Configurar tracing
     tracing_subscriber::fmt()
         .with_target(false)
         .with_level(true)
@@ -15,7 +14,6 @@ async fn main() -> std::io::Result<()> {
     println!("║         LSM-Tree REST API Server                      ║");
     println!("╚═══════════════════════════════════════════════════════╝\n");
 
-    // LER VARIÁVEIS DE AMBIENTE
     let data_dir = env::var("DATA_DIR").unwrap_or_else(|_| "./.lsm_data".to_string());
 
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -25,34 +23,30 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .unwrap_or(8080);
 
-    // Configurar engine
-    let config = LsmConfig {
-        memtable_max_size: 4 * 1024 * 1024, // 4MB
-        data_dir: PathBuf::from(data_dir),
-    };
+    let config = LsmConfig::builder()
+        .dir_path(PathBuf::from(data_dir))
+        .memtable_max_size(4 * 1024 * 1024)
+        .build();
 
-    // Mostrar caminho absoluto do diretório de dados
-    match config.data_dir.canonicalize() {
-        Ok(abs_path) => println!("📂 Diretório de dados: {}\n", abs_path.display()),
+    match config.core.dir_path.canonicalize() {
+        Ok(abs_path) => println!("📂 Data directory: {}\n", abs_path.display()),
         Err(_) => println!(
-            "📂 Diretório de dados: {} (será criado)\n",
-            config.data_dir.display()
+            "📂 Data directory: {} (will be created)\n",
+            config.core.dir_path.display()
         ),
     }
 
-    // Inicializar engine
     let engine = match LsmEngine::new(config) {
         Ok(engine) => engine,
         Err(e) => {
-            eprintln!("❌ Erro ao inicializar LSM Engine: {}", e);
-            eprintln!("💡 Dica: se você não precisa recuperar writes não-flushados, renomeie/apague o wal.log e tente novamente.");
+            eprintln!("❌ Error initializing LSM Engine: {}", e);
+            eprintln!("💡 Tip: if you don't need to recover unflushed writes, rename/delete wal.log and try again.");
             return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
         }
     };
 
-    println!("✓ Engine inicializado com sucesso!");
-    println!("🚀 Iniciando servidor em {}:{}\n", host, port);
+    println!("✓ Engine initialized successfully!");
+    println!("🚀 Starting server at {}:{}\n", host, port);
 
-    // Iniciar servidor HTTP
     lsm_kv_store::api::start_server(engine, &host, port).await
 }
