@@ -315,6 +315,9 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    // NOTE: Assuming StorageConfig implements the Default trait or has a public constructor.
+    // This change is necessary to satisfy the function signature of SStable::create.
+
     #[test]
     fn test_sstable_create_and_open() {
         let dir = tempdir().unwrap();
@@ -330,7 +333,8 @@ mod tests {
             .collect();
 
         // Create SSTable
-        let sstable = SStable::create(dir.path(), timestamp, &records).unwrap();
+        let config = StorageConfig::default(); // Assuming StorageConfig implements Default
+        let sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
         assert_eq!(sstable.metadata.record_count, 100);
         assert!(sstable.index.len() > 0);
 
@@ -370,7 +374,8 @@ mod tests {
             ),
         ];
 
-        let mut sstable = SStable::create(dir.path(), timestamp, &records).unwrap();
+        let config = StorageConfig::default(); // Assuming StorageConfig implements Default
+        let mut sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
 
         // Key before first key
         assert!(sstable.get("aardvark").unwrap().is_none());
