@@ -8,7 +8,7 @@ use crc32fast;
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use tracing::debug;
