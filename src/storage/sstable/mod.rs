@@ -6,11 +6,12 @@ use bloomfilter::Bloom;
 use crc32fast;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
 const SST_MAGIC: &[u8; 8] = b"LSMSST01";
+const BLOCK_SIZE: usize = 4096; // 4KB blocks
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SstableMetadata {
@@ -21,10 +22,20 @@ pub struct SstableMetadata {
     pub checksum: u32,
 }
 
+/// Metadata for a single block in the sparse index
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockMeta {
+    pub first_key: String,
+    pub offset: u64,
+    pub size: u32,
+}
+
 #[derive(Debug)]
 pub struct SStable {
     pub(crate) metadata: SstableMetadata,
     pub(crate) bloom_filter: Bloom<[u8]>,
+    pub(crate) index: Vec<BlockMeta>,
+    pub(crate) file: File,
     pub(crate) path: PathBuf,
 }
 
@@ -34,31 +45,6 @@ fn read_and_check_magic<R: Read>(mut r: R) -> Result<()> {
     if &magic != SST_MAGIC {
         return Err(LsmError::InvalidSstable);
     }
-    Ok(())
-}
-
-fn validate_records_blob(blob: &[u8], expected_count: usize) -> Result<()> {
-    let mut cursor = std::io::Cursor::new(blob);
-    let mut lenbuf = [0u8; 4];
-
-    for _ in 0..expected_count {
-        cursor
-            .read_exact(&mut lenbuf)
-            .map_err(|_| LsmError::InvalidSstable)?;
-        let record_len = u32::from_le_bytes(lenbuf) as usize;
-
-        let mut record_data = vec![0u8; record_len];
-        cursor
-            .read_exact(&mut record_data)
-            .map_err(|_| LsmError::InvalidSstable)?;
-
-        let _: LogRecord = decode(&record_data).map_err(|_| LsmError::InvalidSstable)?;
-    }
-
-    if cursor.position() as usize != blob.len() {
-        return Err(LsmError::InvalidSstable);
-    }
-
     Ok(())
 }
 
@@ -88,16 +74,11 @@ impl SStable {
         }
 
         let bloom_bytes = bloom.into_bytes();
-        let mut records_blob = Vec::new();
+        file.write_all(&(bloom_bytes.len() as u32).to_le_bytes())?;
+        file.write_all(&bloom_bytes)?;
 
-        for (_key, record) in records.iter() {
-            let record_bytes = encode(record)?;
-            let len = record_bytes.len() as u32;
-            records_blob.extend_from_slice(&len.to_le_bytes());
-            records_blob.extend_from_slice(&record_bytes);
-        }
-
-        let checksum = crc32fast::hash(&records_blob);
+        // 2) Metadata
+        let checksum = crc32fast::hash(&encode(&records)?); // Checksum over serialized records
 
         let metadata = SstableMetadata {
             timestamp,
@@ -108,98 +89,304 @@ impl SStable {
         };
 
         let metadata_bytes = encode(&metadata)?;
-
-        file.write_all(&(bloom_bytes.len() as u32).to_le_bytes())?;
-        file.write_all(&bloom_bytes)?;
         file.write_all(&(metadata_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&metadata_bytes)?;
-        file.write_all(&records_blob)?;
+
+        // 3) Write blocks and build sparse index
+        let mut index = Vec::new();
+        let mut current_block = Vec::new();
+        let mut current_block_size = 0usize;
+        let blocks_start_offset = file.stream_position()?;
+        let mut current_offset = blocks_start_offset;
+
+        for (key, record) in records.iter() {
+            let record_bytes = encode(record)?;
+            let entry_size = 4 + record_bytes.len(); // u32 length + data
+
+            // Check if adding this record would exceed block size
+            if current_block_size + entry_size > BLOCK_SIZE && !current_block.is_empty() {
+                // Write current block
+                let block_data = serialize_block(&current_block)?;
+                file.write_all(&block_data)?;
+
+                // Add to index
+                index.push(BlockMeta {
+                    first_key: current_block[0].0.clone(),
+                    offset: current_offset,
+                    size: block_data.len() as u32,
+                });
+
+                current_offset += block_data.len() as u64;
+                current_block.clear();
+                current_block_size = 0;
+            }
+
+            current_block.push((key.clone(), record.clone()));
+            current_block_size += entry_size;
+        }
+
+        // Write last block
+        if !current_block.is_empty() {
+            let block_data = serialize_block(&current_block)?;
+            file.write_all(&block_data)?;
+
+            index.push(BlockMeta {
+                first_key: current_block[0].0.clone(),
+                offset: current_offset,
+                size: block_data.len() as u32,
+            });
+        }
+
+        // 4) Write sparse index
+        let index_offset = file.stream_position()?;
+        let index_bytes = encode(&index)?;
+        file.write_all(&(index_bytes.len() as u32).to_le_bytes())?;
+        file.write_all(&index_bytes)?;
+
+        // 5) Write footer (index offset)
+        file.write_all(&index_offset.to_le_bytes())?;
+
         file.flush()?;
         file.get_ref().sync_all()?;
 
         debug!(
-            "SSTable created: {}, records={}, checksum={}",
+            "SSTable created: {}, records={}, blocks={}, checksum={}",
             path.display(),
             metadata.record_count,
+            index.len(),
             metadata.checksum
         );
 
+        // 6) Open file for reading and rebuild bloom from bytes
+        let read_file = File::open(&path)?;
         let bloom_filter = Bloom::<[u8]>::from_bytes(bloom_bytes)
             .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
 
         Ok(Self {
             metadata,
             bloom_filter,
+            index,
+            file: read_file,
             path,
         })
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
-        let mut file = BufReader::new(File::open(path)?);
+    /// Open an existing SSTable file with lazy loading (only footer + index)
+    pub fn open(path: &Path) -> Result<Self> {
+        let mut file = File::open(path)?;
+
+        // 1. Read footer (last 8 bytes = index offset)
+        file.seek(SeekFrom::End(-8))?;
+        let mut footer = [0u8; 8];
+        file.read_exact(&mut footer)?;
+        let index_offset = u64::from_le_bytes(footer);
+
+        // 2. Read sparse index
+        file.seek(SeekFrom::Start(index_offset))?;
+        let mut len_buf = [0u8; 4];
+        file.read_exact(&mut len_buf)?;
+        let index_len = u32::from_le_bytes(len_buf) as usize;
+        let mut index_data = vec![0u8; index_len];
+        file.read_exact(&mut index_data)?;
+        let index: Vec<BlockMeta> = decode(&index_data)?;
+
+        if index.is_empty() {
+            return Err(LsmError::InvalidSstable);
+        }
+
+        // 3. Read header, bloom filter, and metadata
+        file.seek(SeekFrom::Start(0))?;
         read_and_check_magic(&mut file)?;
 
-        let mut len_buf = [0u8; 4];
-
+        // Bloom filter
         file.read_exact(&mut len_buf)?;
         let bloom_len = u32::from_le_bytes(len_buf) as usize;
         let mut bloom_data = vec![0u8; bloom_len];
         file.read_exact(&mut bloom_data)?;
         let bloom = Bloom::<[u8]>::from_bytes(bloom_data).map_err(|_| LsmError::InvalidSstable)?;
 
+        // Metadata
         file.read_exact(&mut len_buf)?;
         let meta_len = u32::from_le_bytes(len_buf) as usize;
         let mut meta_data = vec![0u8; meta_len];
         file.read_exact(&mut meta_data)?;
         let metadata: SstableMetadata = decode(&meta_data)?;
 
-        let mut records_blob = Vec::new();
-        file.read_to_end(&mut records_blob)?;
-        let actual_checksum = crc32fast::hash(&records_blob);
-
-        if actual_checksum != metadata.checksum {
-            return Err(LsmError::InvalidSstable);
-        }
-
-        validate_records_blob(&records_blob, metadata.record_count as usize)?;
+        debug!(
+            "SSTable opened: {}, records={}, blocks={}",
+            path.display(),
+            metadata.record_count,
+            index.len()
+        );
 
         Ok(Self {
             metadata,
             bloom_filter: bloom,
+            index,
+            file,
             path: path.to_path_buf(),
         })
     }
 
-    pub fn get(&self, key: &str) -> Result<Option<LogRecord>> {
+    /// Legacy load method for backward compatibility (delegates to open)
+    pub fn load(path: &Path) -> Result<Self> {
+        Self::open(path)
+    }
+
+    /// Read a specific block from disk
+    fn read_block(&mut self, block_meta: &BlockMeta) -> Result<Vec<LogRecord>> {
+        self.file.seek(SeekFrom::Start(block_meta.offset))?;
+
+        let mut block_data = vec![0u8; block_meta.size as usize];
+        self.file.read_exact(&mut block_data)?;
+
+        deserialize_block(&block_data)
+    }
+
+    pub fn get(&mut self, key: &str) -> Result<Option<LogRecord>> {
+        // 1. Check bloom filter
         if !self.bloom_filter.check(key.as_bytes()) {
             return Ok(None);
         }
 
-        let mut file = BufReader::new(File::open(&self.path)?);
-        read_and_check_magic(&mut file)?;
+        // 2. Binary search on sparse index using partition_point
+        // Find the first block where first_key > search_key
+        let block_idx = self
+            .index
+            .partition_point(|block_meta| block_meta.first_key.as_str() <= key);
 
-        let mut len_buf = [0u8; 4];
+        // Edge case: key is smaller than the first key of the first block
+        if block_idx == 0 {
+            return Ok(None);
+        }
 
-        file.read_exact(&mut len_buf)?;
-        let bloom_len = u32::from_le_bytes(len_buf) as usize;
-        file.seek(SeekFrom::Current(bloom_len as i64))?;
+        // The candidate block is at index block_idx - 1
+        let candidate_idx = block_idx - 1;
+        let block_meta = &self.index[candidate_idx].clone();
 
-        file.read_exact(&mut len_buf)?;
-        let meta_len = u32::from_le_bytes(len_buf) as usize;
-        file.seek(SeekFrom::Current(meta_len as i64))?;
+        // 3. Load the block from disk
+        let records = self.read_block(block_meta)?;
 
-        for _ in 0..self.metadata.record_count {
-            file.read_exact(&mut len_buf)?;
-            let record_len = u32::from_le_bytes(len_buf) as usize;
-
-            let mut record_data = vec![0u8; record_len];
-            file.read_exact(&mut record_data)?;
-
-            let record: LogRecord = decode(&record_data)?;
+        // 4. Linear search within the block
+        for record in records {
             if record.key == key {
                 return Ok(Some(record));
             }
         }
 
         Ok(None)
+    }
+}
+
+/// Serialize a block of records into bytes
+fn serialize_block(records: &[(String, LogRecord)]) -> Result<Vec<u8>> {
+    let mut block_data = Vec::new();
+    for (_key, record) in records {
+        let record_bytes = encode(record)?;
+        let len = record_bytes.len() as u32;
+        block_data.extend_from_slice(&len.to_le_bytes());
+        block_data.extend_from_slice(&record_bytes);
+    }
+    Ok(block_data)
+}
+
+/// Deserialize a block of bytes into records
+fn deserialize_block(block_data: &[u8]) -> Result<Vec<LogRecord>> {
+    let mut cursor = std::io::Cursor::new(block_data);
+    let mut records = Vec::new();
+    let mut len_buf = [0u8; 4];
+
+    while cursor.position() < block_data.len() as u64 {
+        cursor.read_exact(&mut len_buf)?;
+        let record_len = u32::from_le_bytes(len_buf) as usize;
+
+        let mut record_data = vec![0u8; record_len];
+        cursor.read_exact(&mut record_data)?;
+
+        let record: LogRecord = decode(&record_data)?;
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // NOTE: Assuming StorageConfig implements the Default trait or has a public constructor.
+    // This change is necessary to satisfy the function signature of SStable::create.
+
+    #[test]
+    fn test_sstable_create_and_open() {
+        let dir = tempdir().unwrap();
+        let timestamp = 12345u128;
+
+        // Create test records
+        let records: Vec<(String, LogRecord)> = (0..100)
+            .map(|i| {
+                let key = format!("key_{:03}", i);
+                let record = LogRecord::new(key.clone(), format!("value_{}", i).into_bytes());
+                (key, record)
+            })
+            .collect();
+
+        // Create SSTable
+        let config = StorageConfig::default(); // Assuming StorageConfig implements Default
+        let sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
+        assert_eq!(sstable.metadata.record_count, 100);
+        assert!(sstable.index.len() > 0);
+
+        // Close and reopen
+        drop(sstable);
+        let mut reopened = SStable::open(&dir.path().join(format!("{}.sst", timestamp))).unwrap();
+        assert_eq!(reopened.metadata.record_count, 100);
+        assert!(reopened.index.len() > 0);
+
+        // Test get operations
+        let result = reopened.get("key_050").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().key, "key_050");
+
+        // Test non-existent key
+        let result = reopened.get("key_999").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_sparse_index_edge_cases() {
+        let dir = tempdir().unwrap();
+        let timestamp = 67890u128;
+
+        let records: Vec<(String, LogRecord)> = vec![
+            (
+                "apple".to_string(),
+                LogRecord::new("apple".to_string(), b"a".to_vec()),
+            ),
+            (
+                "banana".to_string(),
+                LogRecord::new("banana".to_string(), b"b".to_vec()),
+            ),
+            (
+                "cherry".to_string(),
+                LogRecord::new("cherry".to_string(), b"c".to_vec()),
+            ),
+        ];
+
+        let config = StorageConfig::default(); // Assuming StorageConfig implements Default
+        let mut sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
+
+        // Key before first key
+        assert!(sstable.get("aardvark").unwrap().is_none());
+
+        // Exact first key
+        assert!(sstable.get("apple").unwrap().is_some());
+
+        // Key after last key
+        assert!(sstable.get("zebra").unwrap().is_none());
+
+        // Middle key
+        assert!(sstable.get("banana").unwrap().is_some());
     }
 }

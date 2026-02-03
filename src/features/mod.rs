@@ -13,13 +13,16 @@ pub struct FeatureFlag {
     pub description: String,
 }
 
+/// Container de todas as feature flags
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Features {
     #[serde(default)]
     pub version: u64,
+    #[serde(default)]
     pub flags: HashMap<String, FeatureFlag>,
 }
 
+/// Cliente para gerenciar feature flags com cache em memória
 pub struct FeatureClient {
     engine: Arc<LsmEngine>,
     cache: Arc<RwLock<Option<(Features, Instant)>>>,
