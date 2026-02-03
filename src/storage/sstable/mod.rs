@@ -1,10 +1,10 @@
 use crate::core::log_record::LogRecord;
 use crate::infra::codec::{decode, encode};
+use crate::infra::config::StorageConfig;
 use crate::infra::error::{LsmError, Result};
 
 use bloomfilter::Bloom;
 use crc32fast;
-
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 const SST_MAGIC: &[u8; 8] = b"LSMSST01";
-const BLOCK_SIZE: usize = 4096; // 4KB blocks
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SstableMetadata {
@@ -55,6 +54,7 @@ impl SStable {
     pub fn create(
         dir_path: &Path,
         timestamp: u128,
+        config: &StorageConfig,
         records: &[(String, LogRecord)],
     ) -> Result<Self> {
         if records.is_empty() {
@@ -63,15 +63,16 @@ impl SStable {
             ));
         }
 
-        let path = dir_path.join(format!("{timestamp}.sst"));
+        let path = dir_path.join(format!("{}.sst", timestamp));
         let mut file = BufWriter::new(File::create(&path)?);
 
-        // Header (magic/version)
+        // 1) Header: Magic bytes
         file.write_all(SST_MAGIC)?;
 
-        // 1) Bloom filter
-        let mut bloom = Bloom::<[u8]>::new_for_fp_rate(records.len(), 0.01)
-            .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
+        // 2) Bloom Filter
+        let mut bloom =
+            Bloom::<[u8]>::new_for_fp_rate(records.len(), config.bloom_false_positive_rate)
+                .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
 
         for (key, _) in records.iter() {
             bloom.set(key.as_bytes());
@@ -81,7 +82,7 @@ impl SStable {
         file.write_all(&(bloom_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&bloom_bytes)?;
 
-        // 2) Metadata
+        // 3) Metadata
         let checksum = crc32fast::hash(&encode(&records)?); // Checksum over serialized records
 
         let metadata = SstableMetadata {
@@ -96,19 +97,20 @@ impl SStable {
         file.write_all(&(metadata_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&metadata_bytes)?;
 
-        // 3) Write blocks and build sparse index
+        // 4) Write blocks and build sparse index
         let mut index = Vec::new();
         let mut current_block = Vec::new();
         let mut current_block_size = 0usize;
         let blocks_start_offset = file.stream_position()?;
         let mut current_offset = blocks_start_offset;
+        let block_size = config.block_size;
 
         for (key, record) in records.iter() {
             let record_bytes = encode(record)?;
             let entry_size = 4 + record_bytes.len(); // u32 length + data
 
             // Check if adding this record would exceed block size
-            if current_block_size + entry_size > BLOCK_SIZE && !current_block.is_empty() {
+            if current_block_size + entry_size > block_size && !current_block.is_empty() {
                 // Write current block
                 let block_data = serialize_block(&current_block)?;
                 file.write_all(&block_data)?;
@@ -141,13 +143,13 @@ impl SStable {
             });
         }
 
-        // 4) Write sparse index
+        // 5) Write sparse index
         let index_offset = file.stream_position()?;
         let index_bytes = encode(&index)?;
         file.write_all(&(index_bytes.len() as u32).to_le_bytes())?;
         file.write_all(&index_bytes)?;
 
-        // 5) Write footer (index offset)
+        // 6) Write footer (index offset)
         file.write_all(&index_offset.to_le_bytes())?;
 
         file.flush()?;
@@ -161,7 +163,7 @@ impl SStable {
             metadata.checksum
         );
 
-        // 6) Open file for reading and rebuild bloom from bytes
+        // 7) Open file for reading and rebuild bloom from bytes
         let read_file = File::open(&path)?;
         let bloom_filter = Bloom::<[u8]>::from_bytes(bloom_bytes)
             .map_err(|e| LsmError::CompactionFailed(e.to_string()))?;
@@ -324,6 +326,7 @@ mod tests {
     fn test_sstable_create_and_open() {
         let dir = tempdir().unwrap();
         let timestamp = 12345u128;
+        let config = StorageConfig::default();
 
         // Create test records
         let records: Vec<(String, LogRecord)> = (0..100)
@@ -335,7 +338,7 @@ mod tests {
             .collect();
 
         // Create SSTable
-        let sstable = SStable::create(dir.path(), timestamp, &records).unwrap();
+        let sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
         assert_eq!(sstable.metadata.record_count, 100);
         assert!(sstable.index.len() > 0);
 
@@ -359,6 +362,7 @@ mod tests {
     fn test_sparse_index_edge_cases() {
         let dir = tempdir().unwrap();
         let timestamp = 67890u128;
+        let config = StorageConfig::default();
 
         let records: Vec<(String, LogRecord)> = vec![
             ("apple".to_string(), LogRecord::new("apple".to_string(), b"a".to_vec())),
@@ -366,7 +370,7 @@ mod tests {
             ("cherry".to_string(), LogRecord::new("cherry".to_string(), b"c".to_vec())),
         ];
 
-        let mut sstable = SStable::create(dir.path(), timestamp, &records).unwrap();
+        let mut sstable = SStable::create(dir.path(), timestamp, &config, &records).unwrap();
 
         // Key before first key
         assert!(sstable.get("aardvark").unwrap().is_none());
