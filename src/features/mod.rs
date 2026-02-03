@@ -15,20 +15,12 @@ pub struct FeatureFlag {
 }
 
 /// Container de todas as feature flags
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Features {
     #[serde(default)]
     pub version: u64,
+    #[serde(default)]
     pub flags: HashMap<String, FeatureFlag>,
-}
-
-impl Default for Features {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            flags: HashMap::new(),
-        }
-    }
 }
 
 /// Cliente para gerenciar feature flags com cache em memória
