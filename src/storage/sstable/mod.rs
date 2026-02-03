@@ -51,34 +51,6 @@ fn read_and_check_magic<R: Read>(mut r: R) -> Result<()> {
     Ok(())
 }
 
-fn validate_records_blob(blob: &[u8], expected_count: usize) -> Result<()> {
-    let mut cursor = std::io::Cursor::new(blob);
-    let mut lenbuf = [0u8; 4];
-
-    for _ in 0..expected_count {
-        cursor
-            .read_exact(&mut lenbuf)
-            .map_err(|_| LsmError::InvalidSstable)?;
-
-        let record_len = u32::from_le_bytes(lenbuf) as usize;
-        let mut record_data = vec![0u8; record_len];
-
-        cursor
-            .read_exact(&mut record_data)
-            .map_err(|_| LsmError::InvalidSstable)?;
-
-        // valida que o record é decodificável
-        let _: LogRecord = decode(&record_data).map_err(|_| LsmError::InvalidSstable)?;
-    }
-
-    // não pode sobrar "lixo" no fim
-    if cursor.position() as usize != blob.len() {
-        return Err(LsmError::InvalidSstable);
-    }
-
-    Ok(())
-}
-
 impl SStable {
     pub fn create(
         dir_path: &Path,
