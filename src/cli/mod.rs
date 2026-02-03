@@ -14,19 +14,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║                    Fase 1: Storage Engine             ║");
     println!("╚═══════════════════════════════════════════════════════╝\n");
 
-    // Configuração
-    let config = LsmConfig {
-        memtable_max_size: 4 * 1024, // 4KB para testes
-        data_dir: PathBuf::from("./.lsm_data"),
-    };
+    // Configuração com estrutura modular
+    let config = LsmConfig::builder()
+        .dir_path(PathBuf::from("./.lsm_data"))
+        .memtable_max_size(4 * 1024) // 4KB para testes
+        .build();
 
     // ADICIONAR ESTA LINHA:
     println!(
         "📂 Diretório de dados: {}",
-        config.data_dir.canonicalize()?.display()
+        config.core.dir_path.canonicalize()?.display()
     );
 
-    println!("Inicializando engine em: {}", config.data_dir.display());
+    println!("Inicializando engine em: {}", config.core.dir_path.display());
     let engine = LsmEngine::new(config)?;
     println!("✓ Engine inicializado com sucesso!\n");
 
@@ -165,9 +165,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if records.is_empty() {
                             println!("⚠ Banco de dados vazio");
                         } else {
-                            println!("┌─────────────────────────────────────────────────┐");
+                            println!("┌──────────────────────────────────────────────────┐");
                             println!("│  Chave                │  Valor                 │");
-                            println!("├─────────────────────────────────────────────────┤");
+                            println!("├──────────────────────────────────────────────────┤");
 
                             for (key, value) in records {
                                 let value_str = String::from_utf8_lossy(&value);
@@ -184,7 +184,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("│  {:<20} │  {:<20} │", key_display, value_display);
                             }
 
-                            println!("└─────────────────────────────────────────────────┘");
+                            println!("└──────────────────────────────────────────────────┘");
                         }
                     }
                     Err(e) => println!("❌ Erro ao escanear: {}", e),
