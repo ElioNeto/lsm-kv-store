@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LsmConfig {
+    #[serde(default)]
     pub core: CoreConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
 }
 
@@ -19,15 +21,6 @@ pub struct StorageConfig {
     pub block_cache_size_mb: usize,
     pub sparse_index_interval: usize,
     pub bloom_false_positive_rate: f64,
-}
-
-impl Default for LsmConfig {
-    fn default() -> Self {
-        Self {
-            core: CoreConfig::default(),
-            storage: StorageConfig::default(),
-        }
-    }
 }
 
 impl Default for CoreConfig {
