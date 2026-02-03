@@ -1,355 +1,208 @@
-# 🦀 LSM KV Store
+# LSM-KV-Store
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/ElioNeto/lsm-kv-store/rust.yml?branch=main&style=flat-square)](https://github.com/ElioNeto/lsm-kv-store/actions)
+High-performance Key-Value Store using LSM-Tree (Log-Structured Merge-Tree) architecture implemented in Rust.
 
-> **A high-performance, embedded key-value store written in Rust, featuring a modular SOLID architecture and centralized configuration system.**
+## Features
 
-This project implements the **Log-Structured Merge-Tree (LSM-Tree)** architecture, optimized for high write throughput and durability. The codebase follows **SOLID principles** to ensure testability, separation of concerns, and maintainability.
+- ✅ **LSM-Tree Architecture**: Write-optimized with efficient compaction
+- ✅ **Write-Ahead Log (WAL)**: Durability and crash recovery
+- ✅ **MemTable**: Fast in-memory writes with configurable size
+- ✅ **SSTables**: Sorted String Tables with compression
+- ✅ **Bloom Filters**: Fast negative lookups
+- ✅ **REST API**: HTTP interface with full CRUD operations
+- ✅ **Feature Flags**: Dynamic feature management system
+- ✅ **Configurable**: All settings via environment variables
 
----
+## Quick Start
 
-## ✨ Key Features
-
-- 🚀 **High Performance**: Optimized write throughput with WAL and MemTable
-- 📦 **LSM-Tree Architecture**: Efficient storage with automatic flushing to SSTables
-- 🔍 **Bloom Filters**: Fast negative lookups without disk I/O
-- 🛡️ **ACID Guarantees**: Write-Ahead Log ensures durability
-- 🧩 **Modular Design**: Clean SOLID architecture with dependency inversion
-- ⚙️ **Centralized Configuration**: Flexible builder pattern with sensible defaults
-- 🌐 **REST API**: Full-featured HTTP interface with Actix-Web
-- 🚩 **Feature Flags**: Dynamic runtime feature management
-- 📊 **Statistics**: Comprehensive metrics and telemetry
-
----
-
-## 🏛️ Architecture & Design
-
-The engine uses a modular design where each component has a single responsibility, making it easy to swap implementations.
-
-```mermaid
-graph TD
-    subgraph Interface_Layer
-        CLI[CLI / REPL]
-        API[REST API]
-    end
-
-    subgraph Core_Domain
-        Engine[LSM Engine]
-        MemTable[MemTable]
-        LogRecord[LogRecord]
-    end
-
-    subgraph Storage_Layer
-        WAL[Write-Ahead Log]
-        SST[SSTable Manager]
-    end
-
-    subgraph Infrastructure
-        Config[Centralized Config]
-        Codec[Serialization]
-        Error[Error Handling]
-    end
-
-    CLI & API --> Engine
-    Engine --> WAL & MemTable
-    MemTable -- Flush --> SST
-    Engine -- Read --> MemTable & SST
-    Engine --> Config
-```
-
-### 📂 Folder Structure (SOLID)
-
-| Directory       | Responsibility                                                        | Applied Principle               |
-| :-------------- | :-------------------------------------------------------------------- | :------------------------------ |
-| `src/core/`     | **The Brain.** Contains the Engine, MemTable, and record definitions. | **SRP** (Single Responsibility) |
-| `src/storage/`  | **Persistence.** Manages physical writes (WAL) and SSTable format.    | **DIP** (Dependency Inversion)  |
-| `src/infra/`    | **Utilities.** Config, error handling, and serialization logic.       | **Separation of Concerns**      |
-| `src/features/` | **Business Domain.** Feature Flag management with caching.            | **Modularity**                  |
-| `src/api/`      | **Transport.** Actix-Web REST server and handlers.                    | **Decoupling**                  |
-| `src/cli/`      | **Interface.** Interactive REPL implementation.                       | **Isolation**                   |
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **Rust 1.70+**
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-
-### Installation & Execution
+### Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/ElioNeto/lsm-kv-store.git
 cd lsm-kv-store
-
-# Interactive CLI Mode
-cargo run --release
-
-# API Server Mode (with Feature Flags)
-cargo run --release --features api --bin lsm-server
-
-# Run examples
-cargo run --example demo
-cargo run --example basic
-
-# Run tests
-cargo test --all-features
+cargo build --release --features api
 ```
 
----
+### Configuration
 
-## ⚙️ Configuration
-
-The project now features a **centralized configuration system** with a flexible builder pattern.
-
-### Basic Usage
-
-```rust
-use lsm_kv_store::{LsmConfig, LsmEngine};
-
-// Using defaults
-let config = LsmConfig::default();
-let engine = LsmEngine::new(config)?;
-
-// Using builder pattern
-let config = LsmConfig::builder()
-    .dir_path("/var/lib/lsm_data")
-    .memtable_max_size(8 * 1024 * 1024)  // 8MB
-    .block_size(8192)
-    .block_cache_size_mb(128)
-    .build();
-
-let engine = LsmEngine::new(config)?;
-```
-
-### Configuration Options
-
-#### Core Config
-- **`dir_path`**: Data directory path (default: `./.lsmdata`)
-- **`memtable_max_size`**: MemTable size limit in bytes (default: 4MB)
-
-#### Storage Config
-- **`block_size`**: Block size for SSTables (default: 4096)
-- **`block_cache_size_mb`**: Block cache size in MB (default: 64)
-- **`sparse_index_interval`**: Sparse index interval (default: 16)
-- **`bloom_false_positive_rate`**: Bloom filter FP rate (default: 0.01)
-
-### Environment Variables (Server Mode)
+Copy the example environment file and customize:
 
 ```bash
-DATA_DIR="/var/lib/lsm_data" \
-HOST="0.0.0.0" \
-PORT="8080" \
-cargo run --release --features api --bin lsm-server
+cp .env.example .env
 ```
 
----
-
-## 🌐 API & Feature Management
-
-The API includes native support for **Feature Flags**, allowing runtime configuration without restarts.
-
-### Main Endpoints
-
-#### Key-Value Operations
-| Method   | Endpoint              | Description                          |
-| :------- | :-------------------- | :----------------------------------- |
-| `GET`    | `/keys/{key}`         | Retrieve value by key                |
-| `POST`   | `/keys`               | Insert or update key-value pair      |
-| `DELETE` | `/keys/{key}`         | Delete a key                         |
-| `POST`   | `/keys/batch`         | Batch insert multiple keys           |
-| `DELETE` | `/keys/batch`         | Batch delete multiple keys           |
-| `GET`    | `/keys`               | List all keys                        |
-| `GET`    | `/scan`               | Get all key-value pairs              |
-
-#### Search Operations
-| Method | Endpoint                        | Description                    |
-| :----- | :------------------------------ | :----------------------------- |
-| `GET`  | `/keys/search?q={query}`        | Search by substring            |
-| `GET`  | `/keys/search?q={query}&prefix=true` | Search by prefix        |
-
-#### Statistics
-| Method | Endpoint      | Description                           |
-| :----- | :------------ | :------------------------------------ |
-| `GET`  | `/stats`      | Basic statistics                      |
-| `GET`  | `/stats/all`  | Full telemetry (Memory, Disk, WAL)    |
-| `GET`  | `/health`     | Health check                          |
-
-#### Feature Flags
-| Method   | Endpoint           | Description                              |
-| :------- | :----------------- | :--------------------------------------- |
-| `GET`    | `/features`        | List all configured Feature Flags        |
-| `POST`   | `/features/{id}`   | Create or update flag (e.g., `{"enabled": true}`) |
-
----
-
-## 💡 Usage Examples
-
-### Basic Operations
-
-```rust
-use lsm_kv_store::{LsmConfig, LsmEngine};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = LsmConfig::default();
-    let engine = LsmEngine::new(config)?;
-
-    // Insert
-    engine.set("user:1".to_string(), b"Alice".to_vec())?;
-    
-    // Retrieve
-    if let Some(value) = engine.get("user:1")? {
-        println!("Value: {}", String::from_utf8_lossy(&value));
-    }
-    
-    // Delete
-    engine.delete("user:1".to_string())?;
-    
-    // Batch operations
-    engine.set_batch(vec![
-        ("key1".to_string(), b"value1".to_vec()),
-        ("key2".to_string(), b"value2".to_vec()),
-    ])?;
-    
-    // Search
-    let results = engine.search_prefix("user:")?;
-    
-    // Statistics
-    println!("{}", engine.stats());
-    
-    Ok(())
-}
-```
-
-### REST API Examples
+Edit `.env` to configure:
 
 ```bash
-# Insert a key
-curl -X POST http://localhost:8080/keys \
-  -H "Content-Type: application/json" \
-  -d '{"key": "user:1", "value": "Alice"}'
+# Server
+HOST=0.0.0.0
+PORT=8080
+
+# Payload Limits (for large datasets/stress tests)
+MAX_JSON_PAYLOAD_SIZE=52428800  # 50MB
+MAX_RAW_PAYLOAD_SIZE=52428800   # 50MB
+
+# Storage
+DATA_DIR=./.lsm_data
+MEMTABLE_MAX_SIZE=4194304        # 4MB
+BLOCK_SIZE=4096
+BLOCK_CACHE_SIZE_MB=64
+SPARSE_INDEX_INTERVAL=16
+BLOOM_FALSE_POSITIVE_RATE=0.01
+
+# Features
+FEATURE_CACHE_TTL=10
+```
+
+### Running the Server
+
+```bash
+# Using cargo
+cargo run --release --features api --bin lsm-server
+
+# Or using the compiled binary
+./target/release/lsm-server
+```
+
+### Environment Variables Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8080` | Server port |
+| `DATA_DIR` | `./.lsm_data` | Data storage directory |
+| `MEMTABLE_MAX_SIZE` | `4194304` (4MB) | MemTable size before flush |
+| `MAX_JSON_PAYLOAD_SIZE` | `52428800` (50MB) | Max JSON request/response size |
+| `MAX_RAW_PAYLOAD_SIZE` | `52428800` (50MB) | Max raw payload size |
+| `BLOCK_SIZE` | `4096` | SSTable block size |
+| `BLOCK_CACHE_SIZE_MB` | `64` | Block cache size |
+| `SPARSE_INDEX_INTERVAL` | `16` | Blocks between index entries |
+| `BLOOM_FALSE_POSITIVE_RATE` | `0.01` | Bloom filter accuracy |
+| `FEATURE_CACHE_TTL` | `10` | Feature flags cache TTL (seconds) |
+
+## API Endpoints
+
+### Health Check
+```bash
+GET /health
+```
+
+### Key-Value Operations
+
+```bash
+# Set a key
+POST /keys
+{"key": "user:1", "value": "John Doe"}
 
 # Get a key
-curl http://localhost:8080/keys/user:1
+GET /keys/{key}
 
-# Search by prefix
-curl "http://localhost:8080/keys/search?q=user:&prefix=true"
+# Delete a key
+DELETE /keys/{key}
 
-# Get statistics
-curl http://localhost:8080/stats/all
+# List all keys
+GET /keys
 
 # Batch insert
-curl -X POST http://localhost:8080/keys/batch \
-  -H "Content-Type: application/json" \
-  -d '[{"key": "k1", "value": "v1"}, {"key": "k2", "value": "v2"}]'
+POST /keys/batch
+{"records": [{"key": "k1", "value": "v1"}, ...]}
+
+# Search keys
+GET /keys/search?q=user
+GET /keys/search?q=user:&prefix=true
+
+# Scan all
+GET /scan
 ```
 
----
-
-## ⚡ Design Decisions
-
-1. **Dependency Inversion**: `LsmEngine` delegates to `WriteAheadLog` and `SstableManager`, enabling easy unit testing with mocks.
-2. **Centralized Configuration**: All configuration unified in `infra/config.rs` with builder pattern for flexibility.
-3. **Codec Robustness**: Serialization centralized in `infra/codec.rs`, ensuring consistent Little Endian encoding.
-4. **Performance**: Bloom Filters prevent unnecessary disk I/O for non-existent keys.
-5. **Feature Flags**: Optimistic locking with version control prevents race conditions during concurrent updates.
-
----
-
-## 📊 Performance Characteristics
-
-- **Write**: O(log n) - MemTable insertion
-- **Read**: O(log n) - MemTable + SSTable lookup with Bloom filter optimization
-- **Scan**: O(n) - Merges MemTable and SSTables
-- **Space**: Efficient with automatic flushing and future compaction support
-
----
-
-## 🗺️ Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for detailed future plans.
-
-### Completed
-- [x] **SOLID Architecture** - Complete module restructuring
-- [x] **Centralized Configuration** - Builder pattern with sensible defaults
-- [x] **Feature Flags System** - Dynamic management persisted in LSM
-- [x] **REST API** - Full CRUD operations with statistics
-- [x] **Write-Ahead Log** - Durability guarantees
-- [x] **Bloom Filters** - Read optimization
-
-### In Progress
-- [ ] **Sparse Indexing** - Reduce lookup time in large SST files
-- [ ] **Compaction Strategy** - Leveled compaction to reduce read amplification
-
-### Planned
-- [ ] **Multi-instance Support** - Run multiple isolated engines
-- [ ] **Advanced Iterators** - Efficient range queries
-- [ ] **Secondary Indexes** - Query without full scans
-
----
-
-## 📝 Documentation
-
-- [CHANGELOG.md](CHANGELOG.md) - Detailed change history and migration guides
-- [ROADMAP.md](ROADMAP.md) - Future development plans
-- [API Documentation](https://docs.rs/lsm-kv-store) - Full API reference
-
----
-
-## 🧪 Testing
+### Statistics
 
 ```bash
-# Run all tests
-cargo test --all-features
+GET /stats      # Basic stats
+GET /stats/all  # Detailed stats
+```
 
-# Run specific test
-cargo test restart_recovers_from_wal
+### Feature Flags
 
-# Run with output
-cargo test -- --nocapture
+```bash
+# List features
+GET /features
 
-# Run benchmarks (if available)
+# Set feature
+POST /features/{name}
+{"enabled": true, "description": "Feature description"}
+```
+
+## Performance Tuning
+
+### For High-Throughput Writes
+
+```bash
+MEMTABLE_MAX_SIZE=8388608      # 8MB - flush less frequently
+BLOCK_SIZE=8192                # Larger blocks
+BLOOM_FALSE_POSITIVE_RATE=0.05 # Less accurate but faster
+```
+
+### For Read-Heavy Workloads
+
+```bash
+BLOCK_CACHE_SIZE_MB=256        # More cache
+BLOOM_FALSE_POSITIVE_RATE=0.001 # More accurate
+SPARSE_INDEX_INTERVAL=8        # Denser index
+```
+
+### For Stress Testing / Large Datasets
+
+```bash
+MAX_JSON_PAYLOAD_SIZE=104857600  # 100MB
+MAX_RAW_PAYLOAD_SIZE=104857600   # 100MB
+MEMTABLE_MAX_SIZE=16777216       # 16MB
+```
+
+## Development
+
+### Run Tests
+
+```bash
+cargo test
+```
+
+### Run with Debug Logging
+
+```bash
+RUST_LOG=debug cargo run --features api --bin lsm-server
+```
+
+### Benchmarks
+
+```bash
 cargo bench
 ```
 
----
+## Architecture
 
-## 🤝 Contributing
+```
+┌─────────────┐
+│   REST API  │
+└──────┬──────┘
+       │
+┌──────▼──────┐     ┌─────────┐
+│  LSM Engine │────▶│   WAL   │
+└──────┬──────┘     └─────────┘
+       │
+   ┌───▼────┐
+   │MemTable│
+   └───┬────┘
+       │ (flush)
+   ┌───▼────────┐
+   │  SSTables  │ (with Bloom Filters)
+   └────────────┘
+```
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes:
+## License
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+MIT
 
----
+## Contributing
 
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 👥 Authors
-
-- **Elio Neto** - [@ElioNeto](https://github.com/ElioNeto)
-
----
-
-## 🚀 Acknowledgments
-
-- Inspired by RocksDB, LevelDB, and Cassandra's LSM-Tree implementations
-- Built with Rust's amazing ecosystem: Actix-Web, Serde, Tracing
-- Thanks to the Rust community for excellent documentation and support
-
----
-
-**⭐ If you find this project useful, please consider giving it a star!**
+Contributions are welcome! Please open an issue or PR.
