@@ -1,3 +1,5 @@
+mod config;
+
 use actix_cors::Cors;
 use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
@@ -6,6 +8,8 @@ use std::time::Duration;
 
 use crate::core::engine::LsmEngine;
 use crate::features::FeatureClient;
+
+pub use config::ServerConfig;
 
 pub struct AppState {
     pub engine: Arc<LsmEngine>,
@@ -56,8 +60,6 @@ pub struct FeatureResponse {
     pub enabled: bool,
     pub description: String,
 }
-
-const MAX_PAYLOAD_SIZE: usize = 50 * 1024 * 1024;
 
 #[get("/health")]
 async fn health() -> impl Responder {
@@ -322,15 +324,23 @@ async fn set_feature(
     }
 }
 
-pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::Result<()> {
+pub async fn start_server(
+    engine: LsmEngine,
+    server_config: ServerConfig,
+) -> std::io::Result<()> {
     let engine = Arc::new(engine);
     let features = Arc::new(FeatureClient::new(
         Arc::clone(&engine),
-        Duration::from_secs(10),
+        Duration::from_secs(server_config.feature_cache_ttl_secs),
     ));
 
-    println!("🚀 API at http://{}:{}", host, port);
-    println!("📦 Max payload size: {} MB", MAX_PAYLOAD_SIZE / 1024 / 1024);
+    server_config.print_info();
+    println!("🚀 Starting server at {}:{}\n", server_config.host, server_config.port);
+
+    let max_json = server_config.max_json_payload_size;
+    let max_raw = server_config.max_raw_payload_size;
+    let host = server_config.host.clone();
+    let port = server_config.port;
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -344,8 +354,8 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
                 engine: Arc::clone(&engine),
                 features: Arc::clone(&features),
             }))
-            .app_data(web::JsonConfig::default().limit(MAX_PAYLOAD_SIZE))
-            .app_data(web::PayloadConfig::default().limit(MAX_PAYLOAD_SIZE))
+            .app_data(web::JsonConfig::default().limit(max_json))
+            .app_data(web::PayloadConfig::default().limit(max_raw))
             .service(health)
             .service(get_stats)
             .service(get_stats_all)
@@ -358,7 +368,7 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
             .service(list_features)
             .service(set_feature)
     })
-    .bind((host, port))?
+    .bind((host.as_str(), port))?
     .run()
     .await
 }
