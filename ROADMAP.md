@@ -1,242 +1,290 @@
 # Roadmap — LSM KV Store
 
-**Data:** 2026-01-24  
-**Modelo base do storage:** `key: String -> value: Vec<u8>` (LSM-Tree)  
-**Objetivo:** Evoluir o projeto em versões inteiras, adicionando **iteradores eficientes**, **compaction**, **índices secundários** (posting lists em blocos) e, posteriormente, **múltiplas instâncias** com perfis especializados (Mongo-like e RocksDB/Redis-like).
+**Last Updated:** 2026-02-03  
+**Base Storage Model:** `key: String -> value: Vec<u8>` (LSM-Tree)  
+**Objective:** Evolve the project through versioned releases, adding **efficient iterators**, **compaction**, **secondary indexes** (posting lists in blocks), and eventually **multi-instance** support with specialized profiles (Mongo-like and RocksDB/Redis-like).
 
 ---
 
-## Convenção de versões
+## Version Convention
 
-- **Versões sem sufixo** (ex.: v2, v4, v7): entregas evolutivas/experimentais que podem quebrar compatibilidade de API ou formato em disco.
-- **Versões `-lts`** (ex.: v3-lts, v5-lts, v6-lts, v8-lts): versões estáveis, prontas para produção, com foco em compatibilidade, migração e operação confiável no "mundo real".
-
----
-
-## v1 — Status atual (implementado)
-
-### Storage engine
-
-- **MemTable** (BTreeMap) com limite de tamanho configurável (`memtable_max_size`).
-- **WAL** (Write-Ahead Log) durável para recuperação de writes não-flushados.
-- **Flush** automático para SSTables quando MemTable atinge limite.
-- **SSTables** com Bloom Filter para otimizar `get()`.
-- **Recovery** do WAL ao inicializar engine.
-- **Delete** via tombstone (marcação lógica).
-- `stats()` e `stats_all()` para estatísticas do engine.
-
-### Acesso
-
-- **CLI** (REPL) com comandos interativos: `SET`, `GET`, `DELETE`, `SCAN`, `ALL`, `KEYS`, `COUNT`, `STATS`, `BATCH`, `DEMO`.
-- **REST API** com endpoints:
-  - `GET /health` - healthcheck
-  - `GET /stats` e `GET /stats_all` - estatísticas
-  - `GET /keys` - listar todas as chaves
-  - `GET /keys/{key}` - buscar valor
-  - `POST /keys` - inserir/atualizar chave
-  - `POST /keys/batch` - inserir múltiplas chaves
-  - `DELETE /keys/{key}` - deletar chave
-  - `DELETE /keys/batch` - deletar múltiplas chaves
-  - `GET /keys/search?q=...&prefix=false` - buscar por substring/prefixo
-  - `GET /scan` - retornar todos os dados
-
-### Arquitetura
-
-- **Single-instance**: um único `LsmEngine` por processo, apontando para `./.lsmdata`.
-- **Codec básico**: API recebe `value` como `String` e grava `as_bytes().to_vec()`.
-- **Busca por prefix/substring**: implementada via `scan()` completo + filtro (não há iteradores eficientes).
-
-### Limitações conhecidas
-
-- ❌ **Sem compaction**: `flush()` contém `TODO compaction`; número de SSTables cresce indefinidamente.
-- ❌ **Sem iteradores eficientes**: `search_prefix()` faz scan total.
-- ❌ **Sem índices secundários**: queries no value requerem scan total.
-- ❌ **Sem multi-instância**: impossível rodar perfis diferentes no mesmo servidor.
-- ❌ **Sem codec por instância**: não há suporte para `raw`/`json`/`bson` diferenciados.
-- ❌ **Sem validação de integridade**: SSTables corrompidas podem quebrar recovery.
+- **Regular versions** (e.g., v2, v4, v7): Evolutionary/experimental releases that may break API compatibility or on-disk format.
+- **LTS versions** (e.g., v3-lts, v5-lts, v6-lts, v8-lts): Stable versions, production-ready, focused on compatibility, migration, and reliable real-world operation.
 
 ---
 
-## v2 — Base operacional + iteradores (fundação para índices)
+## v1 — Current Status (Implemented)
 
-### Objetivo
+### Storage Engine
 
-Criar a infraestrutura básica para parar de depender de "scan total" ao buscar por range ou prefixo.
+- **MemTable** (BTreeMap) with configurable size limit (`memtable_max_size`).
+- **WAL** (Write-Ahead Log) for durable recovery of unflushed writes.
+- **Automatic Flush** to SSTables when MemTable reaches limit.
+- **SSTables** with Bloom Filters to optimize `get()` operations.
+- **Recovery** from WAL on engine initialization.
+- **Delete** via tombstone (logical deletion).
+- `stats()` and `stats_all()` for engine statistics.
 
-### Entregas
+### Access
 
-#### Iteradores eficientes no engine
+- **CLI** (REPL) with interactive commands: `SET`, `GET`, `DELETE`, `SCAN`, `ALL`, `KEYS`, `COUNT`, `STATS`, `BATCH`, `DEMO`.
+- **REST API** with endpoints:
+  - `GET /health` - Health check
+  - `GET /stats` and `GET /stats/all` - Statistics
+  - `GET /keys` - List all keys
+  - `GET /keys/{key}` - Fetch value
+  - `POST /keys` - Insert/update key
+  - `POST /keys/batch` - Insert multiple keys
+  - `DELETE /keys/{key}` - Delete key
+  - `DELETE /keys/batch` - Delete multiple keys
+  - `GET /keys/search?q=...&prefix=false` - Search by substring/prefix
+  - `GET /scan` - Return all data
 
-- `iter_prefix(prefix)` e/ou `iter_range(min..max)` que mesclem MemTable + SSTables por ordem de recência, respeitando tombstones.
-- Implementação de merge-iterator para combinar múltiplas fontes de dados ordenadas.
+### Architecture
 
-#### Otimização de leitura em SSTable
+- **Single-instance**: One `LsmEngine` per process, pointing to `./.lsmdata`.
+- **Basic codec**: API receives `value` as `String` and stores `as_bytes().to_vec()`.
+- **Prefix/substring search**: Implemented via full `scan()` + filter (no efficient iterators).
 
-- Introduzir **índice interno** na SSTable (ex.: sparse index com offsets) para evitar varredura linear completa no `get()`.
-- Reduzir latência de leitura em SSTables grandes.
+### Known Limitations
 
-#### Robustez
-
-- **Validação de integridade**: checksum por registro ou por bloco.
-- **Tolerância a falhas**: ignorar/logar SSTables inválidas durante recovery (não abortar o processo).
-- Mensagens de erro mais claras para facilitar debug.
-
-### Critério de pronto
-
-É possível ler chaves `idx:*` por prefixo com paginação estável **sem varrer o banco todo**.
-
----
-
-## v3-lts — Compaction (sustentar leitura e operação contínua) 🏷️
-
-### Objetivo
-
-Tornar o sistema sustentável para operação contínua, evitando degradação de performance e explosão de SSTables.
-
-### Entregas
-
-#### Compaction inicial
-
-- Implementar estratégia de compaction (sugestão: **size-tiered** ou **leveled**).
-- Remover duplicatas (manter versão mais recente de cada chave).
-- Remover tombstones definitivamente quando seguro (não há SSTables mais antigas com a chave).
-- Controlar número de SSTables ativos.
-
-#### Configuração e tuning
-
-- Parâmetros de compaction configuráveis (ex.: `max_sstables_before_compact`, `compaction_strategy`).
-- Logging de operações de compaction para auditoria.
-
-#### Admin básico
-
-- Comando/endpoint para forçar compaction manual (ex.: `POST /admin/compact`).
-- Comando/endpoint para verificar integridade (`POST /admin/verify`).
-
-### Critério de pronto
-
-- Número de SSTables estabiliza ao longo do tempo.
-- Latência de leitura não degrada continuamente com o volume de writes.
-- Sistema opera por dias/semanas sem degradação perceptível.
-
-### Status LTS
-
-✅ **Primeira versão LTS** — KV puro e durável, sem índices avançados, mas já operável para workloads simples de cache, log ou armazenamento de blobs.
+- ❌ **No compaction**: `flush()` contains `TODO compaction`; number of SSTables grows indefinitely.
+- ❌ **No efficient iterators**: `search_prefix()` performs full scan.
+- ❌ **No secondary indexes**: Queries on value require full scan.
+- ❌ **No multi-instance**: Impossible to run different profiles on the same server.
+- ❌ **No per-instance codec**: No support for differentiated `raw`/`json`/`bson`.
+- ❌ **No integrity validation**: Corrupted SSTables can break recovery.
 
 ---
 
-## v4 — Índices secundários (posting lists em blocos) + Query por índice
+## v1.4 — Configuration Refactoring ✅ (Completed - 2026-02-03)
 
-### Objetivo
+### Objective
 
-Habilitar **queries no value** sem scan total, usando índices secundários e posting lists em blocos para alto volume.
+Modernize configuration system with centralized, type-safe, and flexible approach.
 
-### Entregas
+### Deliverables
+
+#### Centralized Configuration System ✅
+
+- Created unified `LsmConfig` structure in `src/infra/config.rs`
+- Separated concerns into:
+  - `CoreConfig`: Core engine settings (`dir_path`, `memtable_max_size`)
+  - `StorageConfig`: Storage layer settings (`block_size`, `block_cache_size_mb`, `sparse_index_interval`, `bloom_false_positive_rate`)
+- Implemented builder pattern via `LsmConfigBuilder`
+- Provided sensible defaults for all configuration parameters
+
+#### Code Modernization ✅
+
+- Removed duplicate `LsmConfig` definitions from core modules
+- Updated all modules to use centralized configuration
+- Removed Portuguese comments for international consistency
+- Translated user-facing messages to English
+
+#### Developer Experience ✅
+
+- **Builder Pattern**: Intuitive configuration syntax
+  ```rust
+  let config = LsmConfig::builder()
+      .dir_path("/path/to/data")
+      .memtable_max_size(8 * 1024 * 1024)
+      .build();
+  ```
+- **Type Safety**: Strong typing for all parameters
+- **Better Defaults**: Sensible defaults reduce boilerplate
+- **Backward Compatibility**: Data format unchanged
+
+### Completion Criteria ✅
+
+- All code uses centralized configuration
+- Build and tests pass without errors
+- Documentation updated (README, CHANGELOG)
+- Migration guide provided
+
+---
+
+## v2 — Operational Base + Iterators (Foundation for Indexes)
+
+### Objective
+
+Create infrastructure to stop relying on "full scan" for range or prefix searches.
+
+### Deliverables
+
+#### Efficient Engine Iterators
+
+- `iter_prefix(prefix)` and/or `iter_range(min..max)` that merge MemTable + SSTables by recency order, respecting tombstones.
+- Merge-iterator implementation to combine multiple ordered data sources.
+
+#### SSTable Read Optimization
+
+- Introduce **internal index** in SSTable (e.g., sparse index with offsets) to avoid complete linear scan in `get()`.
+- Reduce read latency in large SSTables.
+
+#### Robustness
+
+- **Integrity validation**: Checksum per record or per block.
+- **Fault tolerance**: Ignore/log invalid SSTables during recovery (don't abort process).
+- Clearer error messages for easier debugging.
+
+### Completion Criteria
+
+Possible to read `idx:*` keys by prefix with stable pagination **without scanning the entire database**.
+
+---
+
+## v3-lts — Compaction (Sustain Read and Continuous Operation) 🏷️
+
+### Objective
+
+Make the system sustainable for continuous operation, avoiding performance degradation and SSTable explosion.
+
+### Deliverables
+
+#### Initial Compaction
+
+- Implement compaction strategy (suggestion: **size-tiered** or **leveled**).
+- Remove duplicates (keep most recent version of each key).
+- Permanently remove tombstones when safe (no older SSTables with the key).
+- Control number of active SSTables.
+
+#### Configuration and Tuning
+
+- Configurable compaction parameters (e.g., `max_sstables_before_compact`, `compaction_strategy`).
+- Logging of compaction operations for auditing.
+
+#### Basic Admin
+
+- Command/endpoint to force manual compaction (e.g., `POST /admin/compact`).
+- Command/endpoint to verify integrity (`POST /admin/verify`).
+
+### Completion Criteria
+
+- Number of SSTables stabilizes over time.
+- Read latency doesn't continuously degrade with write volume.
+- System operates for days/weeks without noticeable degradation.
+
+### LTS Status
+
+✅ **First LTS version** — Pure and durable KV, without advanced indexes, but already operable for simple cache, log, or blob storage workloads.
+
+---
+
+## v4 — Secondary Indexes (Posting Lists in Blocks) + Index Queries
+
+### Objective
+
+Enable **value queries** without full scan, using secondary indexes and posting lists in blocks for high volume.
+
+### Deliverables
 
 #### Index Registry
 
-- Arquivo de configuração `indexes.toml` ou `indexes.json` (por instância ou global).
-- Define para cada índice:
+- Configuration file `indexes.toml` or `indexes.json` (per instance or global).
+- Defines for each index:
   - `index_name`
-  - `scope_prefix` (opcional, ex.: `users:*`)
+  - `scope_prefix` (optional, e.g., `users:*`)
   - `index_type` (`equality`, `range`, `text`)
-  - `extractor` (como extrair termos do `Vec<u8>`)
+  - `extractor` (how to extract terms from `Vec<u8>`)
 
-#### Extractors (plugins para extrair termos indexáveis)
+#### Extractors (Plugins to Extract Indexable Terms)
 
-- `raw`: sem extração (índice direto sobre bytes/string).
-- `json_path`: extrai campo JSON via path (ex.: `$.city`).
-- `bson_path`: extrai campo BSON via path.
-- `custom`: função Rust customizada.
+- `raw`: No extraction (direct index over bytes/string).
+- `json_path`: Extract JSON field via path (e.g., `$.city`).
+- `bson_path`: Extract BSON field via path.
+- `custom`: Custom Rust function.
 
-#### Layout de posting lists em blocos
+#### Posting Lists Layout in Blocks
 
+```
 idx:{index}:{term}:meta -> { last_block, total_postings, ... }
 idx:{index}:{term}:blk:{000001} -> [pk1, pk2, ...]
 idx:{index}:{term}:blk:{000002} -> [pk3, pk4, ...]
+```
 
-#### Atualização de índice no write-path
+#### Index Update in Write-Path
 
-- **No `SET`**: extrai termos do value (via extractor) e faz append no bloco corrente; cria novo bloco quando cheio.
-- **No `DELETE`**: política inicial de **lazy deletion** (marcação lógica); limpeza real em rebuild/compaction.
+- **On `SET`**: Extract terms from value (via extractor) and append to current block; create new block when full.
+- **On `DELETE`**: Initial policy of **lazy deletion** (logical marking); actual cleanup in rebuild/compaction.
 
-#### Query API obrigatoriamente indexada
+#### Mandatory Indexed Query API
 
-- Endpoint `POST /query` (ou `POST /db/{instance}/query` quando multi-instância estiver pronto).
-- Exige parâmetros: `index`, `term` (e opcionalmente `cursor`, `limit`).
-- **Sem fallback para scan**: retorna erro se não existir índice compatível.
+- Endpoint `POST /query` (or `POST /db/{instance}/query` when multi-instance is ready).
+- Requires parameters: `index`, `term` (and optionally `cursor`, `limit`).
+- **No scan fallback**: Returns error if compatible index doesn't exist.
 
-### Critério de pronto
+### Completion Criteria
 
-Query por `city=PortoAlegre` retorna resultados consultando **apenas** `idx:*` + GETs das PKs (sem scan).
-
----
-
-## v5-lts — Queries compostas + paginação estável + admin de índices 🏷️
-
-### Objetivo
-
-Tornar queries por índice **confiáveis e operáveis em produção**, com suporte a consultas compostas e ferramentas administrativas.
-
-### Entregas
-
-#### Queries compostas
-
-- Suporte a interseção de posting lists (ex.: `city=PortoAlegre AND age=30`).
-- Estratégia inicial: carregar blocos do menor conjunto e testar pertença no maior.
-- Otimizações futuras: skip pointers, bitsets.
-
-#### Paginação e cursores estáveis
-
-- Cursor como `(term, block_id, offset)` para paginação previsível.
-- Garantir que paginação funciona mesmo com writes concorrentes (snapshot read ou versionamento).
-
-#### Limites e proteção
-
-- `limit`: máximo de resultados por request.
-- `timeout`: tempo máximo de execução de query.
-- `max_postings_scanned`: proteção contra queries explosivas.
-
-#### API administrativa de índices
-
-- `GET /indexes` - listar índices registrados.
-- `POST /indexes` - registrar novo índice.
-- `DELETE /indexes/{name}` - remover índice.
-- `POST /indexes/{name}/rebuild` - reconstruir índice (operação admin; pode ser demorada).
-
-#### Compaction com suporte a índices
-
-- Preservar postings corretos durante compaction.
-- Limpar lazy deletions quando possível.
-- Oferecer `rebuild index` para corrigir inconsistências.
-
-### Critério de pronto
-
-- Consultas compostas retornam em tempo previsível.
-- Paginação estável funciona corretamente.
-- Admin consegue criar/remover/reconstruir índices via API.
-
-### Status LTS
-
-✅ **Segunda versão LTS** — KV com índices secundários prontos para produção, adequado para aplicações que precisam query sem scan.
+Query for `city=PortoAlegre` returns results by consulting **only** `idx:*` + GETs of PKs (no scan).
 
 ---
 
-## v6-lts — Multi-instância + Codec por instância 🏷️
+## v5-lts — Composite Queries + Stable Pagination + Index Admin 🏷️
 
-### Objetivo
+### Objective
 
-Rodar **múltiplas instâncias** no mesmo servidor, cada uma com `data_dir`, tuning e perfil de value independentes (`raw`/`json`/`bson`).
+Make index queries **reliable and operable in production**, with support for composite queries and administrative tools.
 
-### Entregas
+### Deliverables
 
-#### Arquivo de configuração `lsm.toml`
+#### Composite Queries
+
+- Support for posting list intersection (e.g., `city=PortoAlegre AND age=30`).
+- Initial strategy: Load blocks from smallest set and test membership in larger.
+- Future optimizations: Skip pointers, bitsets.
+
+#### Pagination and Stable Cursors
+
+- Cursor as `(term, block_id, offset)` for predictable pagination.
+- Ensure pagination works even with concurrent writes (snapshot read or versioning).
+
+#### Limits and Protection
+
+- `limit`: Maximum results per request.
+- `timeout`: Maximum query execution time.
+- `max_postings_scanned`: Protection against explosive queries.
+
+#### Index Administrative API
+
+- `GET /indexes` - List registered indexes.
+- `POST /indexes` - Register new index.
+- `DELETE /indexes/{name}` - Remove index.
+- `POST /indexes/{name}/rebuild` - Rebuild index (admin operation; can be time-consuming).
+
+#### Compaction with Index Support
+
+- Preserve correct postings during compaction.
+- Clean lazy deletions when possible.
+- Offer `rebuild index` to fix inconsistencies.
+
+### Completion Criteria
+
+- Composite queries return in predictable time.
+- Stable pagination works correctly.
+- Admin can create/remove/rebuild indexes via API.
+
+### LTS Status
+
+✅ **Second LTS version** — KV with production-ready secondary indexes, suitable for applications needing queries without scan.
+
+---
+
+## v6-lts — Multi-Instance + Per-Instance Codec 🏷️
+
+### Objective
+
+Run **multiple instances** on the same server, each with independent `data_dir`, tuning, and value profile (`raw`/`json`/`bson`).
+
+### Deliverables
+
+#### Configuration File `lsm.toml`
 
 ```toml
 [[instance]]
 name = "app"
 data_dir = "./.lsm_app"
 memtable_max_size = 4194304  # 4MB
-codec = "bson"   # ou "json"
+codec = "bson"   # or "json"
 query = true
 indexes_file = "./indexes_app.toml"
 
@@ -246,138 +294,133 @@ data_dir = "./.lsm_log"
 memtable_max_size = 16777216  # 16MB
 codec = "raw"
 query = false
-indexes_file = "./indexes_log.toml"
-Roteamento por instância
-POST /db/{instance}/keys
-
-GET /db/{instance}/keys/{key}
-
-POST /db/{instance}/keys/batch
-
-DELETE /db/{instance}/keys/batch
-
-POST /db/{instance}/query
-
-GET /db/{instance}/stats
-
-GET /db/{instance}/indexes
-
-POST /db/{instance}/indexes
-
-etc.
-
-Camada de codec
-raw: value é bytes; API pode receber/enviar base64 no HTTP (opcional).
-
-json: API recebe/envia JSON; storage grava UTF-8 bytes.
-
-bson: API recebe/envia JSON; storage grava BSON (melhor preservação de tipos).
-
-Index Registry por instância
-indexes_app.toml com extractors JSON/BSON (para instância app).
-
-indexes_log.toml geralmente vazio ou apenas prefix-based (para instância log).
-
-Isolamento completo
-Cada instância tem seu próprio LsmEngine, WAL, SSTables, MemTable.
-
-Compaction e recovery são independentes.
-
-Critério de pronto
-Conseguir rodar simultaneamente:
-
-Instância app com query=true, codec BSON, e queries indexadas no value.
-
-Instância log como KV puro (query=false), codec raw, para ingestão rápida de logs/counters.
-
-Status LTS
-✅ Terceira versão LTS — Multi-instância + codec por instância, pronto para workloads heterogêneos (aplicação + logs/cache) no mesmo servidor.
-
-v7 — Camada "Mongo-like" (coleções/documentos)
-Objetivo
-Dar ergonomia de MongoDB no acesso, mantendo o motor KV embaixo.
-
-Entregas
-Collections/namespace
-Convenção de chaves: users:{id}, orders:{id}.
-
-Metadados de collections (opcionalmente armazenados no próprio KV).
-
-Endpoints "Mongo-like"
-POST /db/{instance}/collections/{name} - insert document.
-
-GET /db/{instance}/collections/{name}/{id} - findById.
-
-POST /db/{instance}/collections/{name}/find - query indexada (reaproveita posting lists).
-
-PUT /db/{instance}/collections/{name}/{id} - update document.
-
-DELETE /db/{instance}/collections/{name}/{id} - delete document.
-
-Índices declarativos por collection
-Configuração de índices por collection usando posting blocks (já existente na v4/v5).
-
-Extrator JSON/BSON automático para campos especificados.
-
-Critério de pronto
-Ergonomia de documentos/coleções funcionando sem scan sobre a instância app.
-
-v8-lts — Operação: backup/recovery + ferramentas admin 🏷️
-Objetivo
-Fornecer ferramentas de operação e manutenção para ambientes de produção.
-
-Entregas
-Backup/restore por instância
-Snapshot de diretório + manifest (versão, timestamp, SSTables incluídas).
-
-Comando lsm-admin backup {instance} --output backup.tar.gz.
-
-Comando lsm-admin restore {instance} --input backup.tar.gz.
-
-Ferramentas CLI de admin
-lsm-admin verify {instance} - verificar integridade de SSTables, WAL, índices.
-
-lsm-admin rebuild-index {instance} {index_name} - reconstruir índice.
-
-lsm-admin compact {instance} - forçar compaction manual.
-
-lsm-admin export {instance} --format json - exportar dados para JSON/CSV.
-
-lsm-admin import {instance} --format json --input data.json - importar dados.
-
-Monitoramento e métricas
-Endpoint /metrics (Prometheus-compatible) com estatísticas de cada instância.
-
-Logs estruturados (JSON) para facilitar análise.
-
-Critério de pronto
-Processo claro e testado de backup/restore e manutenção repetível por instância.
-
-Status LTS
-✅ Quarta versão LTS — Sistema completo de operação, pronto para deploy em produção com suporte a backup, restore e ferramentas de manutenção.
-
-Observações de design (importantes)
-Modelo de storage sempre KV: mesmo com "instância Mongo-like", o storage continua key: String -> value: Vec<u8>. A ergonomia de documentos/coleções vem da camada de codec + collections + índices por postings.
-
-Query sem scan: só é viável com índice secundário; posting blocks é a estratégia padrão para alto volume.
-
-Multi-instância: diretórios separados evitam mistura de formatos e facilitam tuning (memtable/compaction) por workload.
-
-Versões LTS: garantem estabilidade de formato em disco e API, com processo de migração documentado entre versões.
-
-Versionamento de formato: a partir de v3-lts, SSTables e WAL devem incluir número de versão de formato para permitir upgrade/downgrade controlado.
-
-Resumo: versões e marcos
-Versão	LTS?	Marco principal
-v1	❌	KV básico funcional (código atual)
-v2	❌	Iteradores eficientes + índice interno em SSTable
-v3-lts	✅	Compaction + KV durável para produção
-v4	❌	Índices secundários + posting lists
-v5-lts	✅	Queries indexadas prontas para produção
-v6-lts	✅	Multi-instância + codec por instância
-v7	❌	Camada Mongo-like (coleções/documentos)
-v8-lts	✅	Backup/restore + ferramentas admin completas
-Última atualização: 2026-01-24
-Autores: Equipe LSM KV Store
-Licença: [definir]
 ```
+
+#### Per-Instance Routing
+
+- `POST /db/{instance}/keys`
+- `GET /db/{instance}/keys/{key}`
+- `POST /db/{instance}/query`
+- etc.
+
+#### Codec Layer
+
+- `raw`: Value is bytes; API can receive/send base64 in HTTP (optional).
+- `json`: API receives/sends JSON; storage writes UTF-8 bytes.
+- `bson`: API receives/sends JSON; storage writes BSON (better type preservation).
+
+#### Complete Isolation
+
+- Each instance has its own LsmEngine, WAL, SSTables, MemTable.
+- Compaction and recovery are independent.
+
+### Completion Criteria
+
+Able to run simultaneously:
+- `app` instance with `query=true`, BSON codec, and indexed value queries.
+- `log` instance as pure KV (`query=false`), raw codec, for fast log/counter ingestion.
+
+### LTS Status
+
+✅ **Third LTS version** — Multi-instance + per-instance codec, ready for heterogeneous workloads (application + logs/cache) on the same server.
+
+---
+
+## v7 — "Mongo-like" Layer (Collections/Documents)
+
+### Objective
+
+Provide MongoDB ergonomics for access, while keeping the KV engine underneath.
+
+### Deliverables
+
+#### Collections/Namespace
+
+- Key convention: `users:{id}`, `orders:{id}`.
+- Collection metadata (optionally stored in the KV itself).
+
+#### "Mongo-like" Endpoints
+
+- `POST /db/{instance}/collections/{name}` - Insert document.
+- `GET /db/{instance}/collections/{name}/{id}` - FindById.
+- `POST /db/{instance}/collections/{name}/find` - Indexed query (reuses posting lists).
+- `PUT /db/{instance}/collections/{name}/{id}` - Update document.
+- `DELETE /db/{instance}/collections/{name}/{id}` - Delete document.
+
+#### Declarative Indexes per Collection
+
+- Index configuration per collection using posting blocks (from v4/v5).
+- Automatic JSON/BSON extractor for specified fields.
+
+### Completion Criteria
+
+Document/collection ergonomics working without scan over `app` instance.
+
+---
+
+## v8-lts — Operations: Backup/Recovery + Admin Tools 🏷️
+
+### Objective
+
+Provide operation and maintenance tools for production environments.
+
+### Deliverables
+
+#### Backup/Restore per Instance
+
+- Directory snapshot + manifest (version, timestamp, included SSTables).
+- Command `lsm-admin backup {instance} --output backup.tar.gz`.
+- Command `lsm-admin restore {instance} --input backup.tar.gz`.
+
+#### Admin CLI Tools
+
+- `lsm-admin verify {instance}` - Verify integrity of SSTables, WAL, indexes.
+- `lsm-admin rebuild-index {instance} {index_name}` - Rebuild index.
+- `lsm-admin compact {instance}` - Force manual compaction.
+- `lsm-admin export {instance} --format json` - Export data to JSON/CSV.
+- `lsm-admin import {instance} --format json --input data.json` - Import data.
+
+#### Monitoring and Metrics
+
+- `/metrics` endpoint (Prometheus-compatible) with statistics for each instance.
+- Structured logs (JSON) for easier analysis.
+
+### Completion Criteria
+
+Clear and tested backup/restore process and repeatable per-instance maintenance.
+
+### LTS Status
+
+✅ **Fourth LTS version** — Complete operational system, production-ready with backup, restore, and maintenance tools.
+
+---
+
+## Design Observations (Important)
+
+- **Storage model always KV**: Even with "Mongo-like instance", storage remains `key: String -> value: Vec<u8>`. Document/collection ergonomics come from codec + collections + posting indexes layer.
+- **Query without scan**: Only viable with secondary index; posting blocks is the standard strategy for high volume.
+- **Multi-instance**: Separate directories avoid format mixing and facilitate per-workload tuning (memtable/compaction).
+- **LTS versions**: Guarantee on-disk format and API stability, with documented migration process between versions.
+- **Format versioning**: From v3-lts onward, SSTables and WAL must include format version number to allow controlled upgrade/downgrade.
+
+---
+
+## Summary: Versions and Milestones
+
+| Version   | LTS? | Main Milestone                                     |
+| :-------- | :--- | :------------------------------------------------- |
+| v1        | ❌    | Functional basic KV (current code)                 |
+| v1.4      | ✅    | **Configuration refactoring (completed 2026-02-03)** |
+| v2        | ❌    | Efficient iterators + internal SSTable index       |
+| v3-lts    | ✅    | Compaction + durable KV for production             |
+| v4        | ❌    | Secondary indexes + posting lists                  |
+| v5-lts    | ✅    | Production-ready indexed queries                   |
+| v6-lts    | ✅    | Multi-instance + per-instance codec                |
+| v7        | ❌    | Mongo-like layer (collections/documents)           |
+| v8-lts    | ✅    | Complete backup/restore + admin tools              |
+
+---
+
+**Last Updated:** 2026-02-03  
+**Authors:** LSM KV Store Team  
+**License:** MIT

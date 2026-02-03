@@ -1,0 +1,36 @@
+name: "Task"
+description: "Template for creating a new project task"
+title: ""
+labels: ["task"]
+assignees: []
+
+body:
+  - type: input
+    id: task_name
+    attributes:
+      label: "Task Name"
+      description: "Provide a short, clear name for the task."
+      placeholder: "Implement user login"
+
+  - type: textarea
+    id: task_description
+    attributes:
+      label: "Task Description"
+      description: "Describe what needs to be done and why."
+      placeholder: "This task involves creating a login screen for users..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to Complete"
+      description: "List the steps or subtasks required to finish this task."
+      placeholder: "- [ ] Create login form\n- [ ] Validate credentials\n- [ ] Connect to database"
+
+  - type: textarea
+    id: technical_refinement
+    attributes:
+      label: "Technical Refinement (if needed)"
+      description: "Add details about architecture, dependencies, or technical considerations."
+      placeholder: "Consider using JWT for authentication, ensure password hashing..."

@@ -1,12 +1,10 @@
 use crate::core::log_record::LogRecord;
 use crate::infra::codec::{decode, encode};
 use crate::infra::error::{LsmError, Result};
-
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
-
 use tracing::debug;
 
 pub struct WriteAheadLog {
@@ -14,7 +12,7 @@ pub struct WriteAheadLog {
     pub(crate) path: PathBuf,
 }
 
-const MAX_WAL_RECORD_BYTES: usize = 32 * 1024 * 1024; // 32MiB
+const MAX_WAL_RECORD_BYTES: usize = 32 * 1024 * 1024;
 
 impl WriteAheadLog {
     pub fn new(dir_path: &std::path::Path) -> Result<Self> {
@@ -54,16 +52,15 @@ impl WriteAheadLog {
         let mut reader = BufReader::new(file);
 
         loop {
-            // EOF limpo vs truncamento no header de tamanho
             let buf = reader.fill_buf()?;
             if buf.is_empty() {
-                break; // EOF limpo
-            }
-            if buf.len() < 4 {
-                return Err(LsmError::WalCorruption); // truncado no meio do length
+                break;
             }
 
-            // ler o tamanho (4 bytes)
+            if buf.len() < 4 {
+                return Err(LsmError::WalCorruption);
+            }
+
             let mut lengthbuf = [0u8; 4];
             reader.read_exact(&mut lengthbuf)?;
             let length = u32::from_le_bytes(lengthbuf) as usize;
@@ -72,7 +69,6 @@ impl WriteAheadLog {
                 return Err(LsmError::WalCorruption);
             }
 
-            // ler payload; se truncar aqui, é corrupção
             let mut buffer = vec![0u8; length];
             if let Err(e) = reader.read_exact(&mut buffer) {
                 if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -108,8 +104,8 @@ impl WriteAheadLog {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        *guard = BufWriter::new(appendfile);
 
+        *guard = BufWriter::new(appendfile);
         Ok(())
     }
 }

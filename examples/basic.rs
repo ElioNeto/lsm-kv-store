@@ -3,10 +3,10 @@ use tempfile::tempdir;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempdir()?;
-    let cfg = LsmConfig {
-        memtable_max_size: 4 * 1024,
-        data_dir: dir.path().to_path_buf(),
-    };
+    let cfg = LsmConfig::builder()
+        .memtable_max_size(4 * 1024)
+        .dir_path(dir.path().to_path_buf())
+        .build();
 
     let db = LsmEngine::new(cfg)?;
     db.set("hello".to_string(), b"world".to_vec())?;
