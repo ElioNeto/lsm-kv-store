@@ -189,7 +189,7 @@ impl LsmEngine {
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
-        let sst = SStable::create(&self.dir_path, timestamp, &records)?;
+        let sst = SStable::create(&self.dir_path, timestamp, &self.config.storage, &records)?;
 
         let mut sstables = self.sstables_lock()?;
         sstables.insert(0, sst);
