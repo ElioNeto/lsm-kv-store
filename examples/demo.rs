@@ -1,5 +1,4 @@
 use lsm_kv_store::{LsmConfig, LsmEngine, Result};
-use std::path::PathBuf;
 use tempfile::tempdir;
 
 fn main() -> Result<()> {
@@ -47,17 +46,15 @@ fn main() -> Result<()> {
         None => println!("cherry: deleted"),
     }
 
-    // Insert more data to trigger flush
-    println!("\n=== Part 2: Triggering flush to SSTable ===");
+    // Insert more data to trigger automatic flush
+    println!("\n=== Part 2: Adding data (automatic flush will occur) ===");
     for i in 0..100 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{}", i);
         db.set(key, value.into_bytes())?;
     }
 
-    // Flush manually
-    println!("Flushing memtable to SSTable...");
-    db.flush()?;
+    println!("Data inserted (memtable will flush automatically when full)");
 
     // Read some keys
     if let Some(value) = db.get("key_042")? {
@@ -68,15 +65,13 @@ fn main() -> Result<()> {
         println!("apple: {}", String::from_utf8_lossy(&value));
     }
 
-    // Part 3: Trigger compaction by adding multiple levels
+    // Part 3: Add more data to create multiple levels
     println!("\n=== Part 3: Adding more data ===");
     for i in 100..200 {
         let key = format!("key_{:03}", i);
         let value = format!("value_{}", i);
         db.set(key, value.into_bytes())?;
     }
-
-    db.flush()?;
 
     println!("\nDatabase operations complete.");
     println!("Total keys in database: ~200");
