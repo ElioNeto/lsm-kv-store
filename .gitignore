@@ -1,5 +1,6 @@
 target
 .lsm_data
-/examples/*.json
+/local
 credentials
 *.sh
+.env
