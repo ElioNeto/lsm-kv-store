@@ -48,8 +48,11 @@ impl SstableReader {
         // Read and decompress metadata block
         let metadata = Self::read_meta_block(&mut file, meta_offset)?;
 
-        // Reconstruct Bloom filter from stored data
-        let bloom_filter = Self::reconstruct_bloom_filter(&metadata.bloom_filter_data)?;
+        // Deserialize Bloom filter from stored bytes (clone to avoid moving)
+        let bloom_filter =
+            Bloom::<[u8]>::from_bytes(metadata.bloom_filter_data.clone()).map_err(|e| {
+                LsmError::CompactionFailed(format!("Bloom filter deserialization failed: {}", e))
+            })?;
 
         // Initialize LRU cache
         let cache_capacity = Self::calculate_cache_capacity(&config);
@@ -77,7 +80,7 @@ impl SstableReader {
             return Ok(None);
         }
 
-        // Binary search on sparse index to find the block
+        // Binary search on sparse index to find the block (clone to avoid borrow issues)
         let block_meta = match self.binary_search_block(key.as_bytes()) {
             Some(meta) => meta.clone(),
             None => return Ok(None),
@@ -90,11 +93,11 @@ impl SstableReader {
         let block = Block::decode(&block_data);
 
         // Linear scan within the block to find the key
-        self.search_in_block(&block, key.as_bytes())
+        Self::search_in_block(&block, key.as_bytes())
     }
 
     /// Search for a key within a decoded block
-    fn search_in_block(&self, block: &Block, key: &[u8]) -> Result<Option<LogRecord>> {
+    fn search_in_block(block: &Block, key: &[u8]) -> Result<Option<LogRecord>> {
         // Access block data through pub(crate) fields
         for &offset in &block.offsets {
             let offset = offset as usize;
@@ -139,7 +142,10 @@ impl SstableReader {
     pub fn scan(&mut self) -> Result<Vec<(Vec<u8>, LogRecord)>> {
         let mut records = Vec::new();
 
-        for block_meta in &self.metadata.blocks.clone() {
+        // Clone blocks to avoid borrow issues
+        let blocks = self.metadata.blocks.clone();
+
+        for block_meta in &blocks {
             let block_data = self.read_block(block_meta)?;
             let block = Block::decode(&block_data);
 
