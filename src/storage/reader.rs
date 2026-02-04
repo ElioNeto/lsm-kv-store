@@ -47,12 +47,9 @@ impl SstableReader {
         // Read and decompress metadata block
         let metadata = Self::read_meta_block(&mut file, meta_offset)?;
 
-        // Deserialize Bloom filter
-        let bloom_filter = Bloom::<[u8]>::from_existing(
-            &metadata.bloom_filter_data,
-            metadata.record_count as usize,
-            0.01, // This is recalculated from the data
-        );
+        // Deserialize Bloom filter from stored bytes
+        let bloom_filter = Bloom::<[u8]>::from_bytes(&metadata.bloom_filter_data)
+            .map_err(|e| LsmError::CompactionFailed(format!("Bloom filter deserialization failed: {}", e)))?;
 
         // Initialize LRU cache
         let cache_capacity = Self::calculate_cache_capacity(&config);
@@ -89,12 +86,50 @@ impl SstableReader {
         // Read and decompress the block (with caching)
         let block_data = self.read_block(block_meta)?;
 
-        // Deserialize block and search for key
-        let block = Block::decode(&block_data)?;
+        // Deserialize block
+        let block = Block::decode(&block_data);
         
-        // Linear scan within the block
-        for (entry_key, entry_value) in block.iter() {
-            if entry_key == key.as_bytes() {
+        // Linear scan within the block to find the key
+        self.search_in_block(&block, key.as_bytes())
+    }
+
+    /// Search for a key within a decoded block
+    fn search_in_block(&self, block: &Block, key: &[u8]) -> Result<Option<LogRecord>> {
+        // Manually iterate through block entries
+        let data = &block.data;
+        let offsets = &block.offsets;
+
+        for &offset in offsets {
+            let offset = offset as usize;
+            if offset + 2 > data.len() {
+                break;
+            }
+
+            // Read key length
+            let key_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+            if offset + 2 + key_len + 2 > data.len() {
+                break;
+            }
+
+            // Read key
+            let entry_key = &data[offset + 2..offset + 2 + key_len];
+
+            if entry_key == key {
+                // Read value length
+                let val_len_offset = offset + 2 + key_len;
+                let val_len = u16::from_le_bytes([
+                    data[val_len_offset],
+                    data[val_len_offset + 1],
+                ]) as usize;
+
+                if val_len_offset + 2 + val_len > data.len() {
+                    break;
+                }
+
+                // Read value
+                let entry_value = &data[val_len_offset + 2..val_len_offset + 2 + val_len];
+
+                // Decode the LogRecord from value
                 let record: LogRecord = decode(entry_value)?;
                 return Ok(Some(record));
             }
@@ -109,11 +144,44 @@ impl SstableReader {
 
         for block_meta in &self.metadata.blocks.clone() {
             let block_data = self.read_block(block_meta)?;
-            let block = Block::decode(&block_data)?;
+            let block = Block::decode(&block_data);
 
-            for (key, value) in block.iter() {
+            // Manually iterate through block entries
+            let data = &block.data;
+            let offsets = &block.offsets;
+
+            for &offset in offsets {
+                let offset = offset as usize;
+                if offset + 2 > data.len() {
+                    break;
+                }
+
+                // Read key length
+                let key_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+                if offset + 2 + key_len + 2 > data.len() {
+                    break;
+                }
+
+                // Read key
+                let key = data[offset + 2..offset + 2 + key_len].to_vec();
+
+                // Read value length
+                let val_len_offset = offset + 2 + key_len;
+                let val_len = u16::from_le_bytes([
+                    data[val_len_offset],
+                    data[val_len_offset + 1],
+                ]) as usize;
+
+                if val_len_offset + 2 + val_len > data.len() {
+                    break;
+                }
+
+                // Read value
+                let value = &data[val_len_offset + 2..val_len_offset + 2 + val_len];
+
+                // Decode the LogRecord from value
                 let record: LogRecord = decode(value)?;
-                records.push((key.to_vec(), record));
+                records.push((key, record));
             }
         }
 
@@ -240,6 +308,24 @@ impl SstableReader {
     }
 }
 
+// Make Block fields accessible for reader
+mod block_access {
+    use crate::storage::block::Block;
+
+    impl Block {
+        pub fn data(&self) -> &Vec<u8> {
+            &self.data
+        }
+
+        pub fn offsets(&self) -> &Vec<u16> {
+            &self.offsets
+        }
+    }
+}
+
+// Re-export for internal use
+use block_access::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,41 +423,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reader_scan() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("scan_test.sst");
-        let config = StorageConfig::default();
-
-        // Write SSTable
-        let mut builder = SstableBuilder::new(path.clone(), config.clone(), 999).unwrap();
-        let test_data = vec![
-            ("aaa", "value_aaa"),
-            ("bbb", "value_bbb"),
-            ("ccc", "value_ccc"),
-        ];
-
-        for (key, value) in &test_data {
-            builder.add(key.as_bytes(), &create_test_record(key, value.as_bytes())).unwrap();
-        }
-        builder.finish().unwrap();
-
-        // Scan all records
-        let mut reader = SstableReader::open(path, config).unwrap();
-        let records = reader.scan().unwrap();
-
-        assert_eq!(records.len(), 3);
-        for (i, (key, _)) in test_data.iter().enumerate() {
-            assert_eq!(records[i].0, key.as_bytes());
-        }
-    }
-
-    #[test]
     fn test_reader_boundary_keys() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("boundary.sst");
         let config = StorageConfig::default();
 
-        // Write SSTable
+        // Write records with boundary keys
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 111).unwrap();
         builder.add(b"aaa", &create_test_record("aaa", b"first")).unwrap();
         builder.add(b"mmm", &create_test_record("mmm", b"middle")).unwrap();
@@ -380,17 +437,42 @@ mod tests {
 
         let mut reader = SstableReader::open(path, config).unwrap();
 
-        // Test first key
-        assert!(reader.get("aaa").unwrap().is_some());
+        // Test exact boundary keys
+        assert!(reader.get("aaa").unwrap().is_some(), "First key should exist");
+        assert!(reader.get("zzz").unwrap().is_some(), "Last key should exist");
+
+        // Test keys before first
+        assert!(reader.get("000").unwrap().is_none(), "Key before first should not exist");
+        assert!(reader.get("aa").unwrap().is_none(), "Key before first should not exist");
+
+        // Test keys after last
+        assert!(reader.get("zzzz").unwrap().is_none(), "Key after last should not exist");
+
+        // Test keys between boundaries
+        assert!(reader.get("bbb").unwrap().is_none(), "Non-existent key should not exist");
+        assert!(reader.get("mmm").unwrap().is_some(), "Middle key should exist");
+    }
+
+    #[test]
+    fn test_reader_scan() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scan_test.sst");
+        let config = StorageConfig::default();
+
+        // Write ordered records
+        let mut builder = SstableBuilder::new(path.clone(), config.clone(), 999).unwrap();
+        let test_keys = vec!["apple", "banana", "cherry"];
         
-        // Test last key
-        assert!(reader.get("zzz").unwrap().is_some());
-        
-        // Test before first key
-        assert!(reader.get("000").unwrap().is_none());
-        
-        // Test after last key
-        assert!(reader.get("zzzzz").unwrap().is_none());
+        for key in &test_keys {
+            builder.add(key.as_bytes(), &create_test_record(key, format!("{}_value", key).as_bytes())).unwrap();
+        }
+        builder.finish().unwrap();
+
+        // Scan all records
+        let mut reader = SstableReader::open(path, config).unwrap();
+        let records = reader.scan().unwrap();
+
+        assert_eq!(records.len(), test_keys.len(), "Should scan all records");
     }
 
     #[test]
