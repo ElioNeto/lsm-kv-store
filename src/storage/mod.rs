@@ -1,5 +1,5 @@
 pub mod block;
 pub mod builder;
+pub mod config;
 pub mod reader;
-pub mod sstable;
 pub mod wal;
