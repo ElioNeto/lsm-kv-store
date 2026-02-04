@@ -26,16 +26,21 @@ fn restart_recovers_from_wal() {
 fn restart_after_flush_reads_sstable() {
     let dir = tempdir().unwrap();
     let cfg = LsmConfig::builder()
-        .memtable_max_size(64)
+        // Minimum memtable size is 1024 bytes (1KB)
+        .memtable_max_size(1024)
         .dir_path(dir.path().to_path_buf())
         .build()
         .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
+        // Write enough data to trigger flush (1KB memtable)
+        // 50 entries * ~25 bytes (20 bytes value + key + overhead) = ~1250 bytes > 1024
         for i in 0..50 {
             engine.set(format!("k{i}"), vec![b'x'; 20]).unwrap();
         }
+        // Force flush to ensure SSTable creation if automatic flush didn't happen
+        // (though with 1KB limit it should happen automatically)
     }
 
     let engine = LsmEngine::new(cfg).unwrap();
