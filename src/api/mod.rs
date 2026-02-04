@@ -1,20 +1,21 @@
+mod config;
+
 use actix_cors::Cors;
 use actix_web::{delete, get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-// CORREÇÃO: Importando do novo local core::engine
 use crate::core::engine::LsmEngine;
 use crate::features::FeatureClient;
 
-// Estado compartilhado entre threads
+pub use config::ServerConfig;
+
 pub struct AppState {
     pub engine: Arc<LsmEngine>,
     pub features: Arc<FeatureClient>,
 }
 
-// Request/Response DTOs
 #[derive(Deserialize)]
 pub struct SetRequest {
     pub key: String,
@@ -60,8 +61,6 @@ pub struct FeatureResponse {
     pub description: String,
 }
 
-// ==================== HANDLERS ====================
-
 #[get("/health")]
 async fn health() -> impl Responder {
     HttpResponse::Ok().json(ApiResponse {
@@ -102,7 +101,6 @@ async fn get_key(path: web::Path<String>, data: web::Data<AppState>) -> impl Res
     let key = path.into_inner();
 
     match data.engine.get(&key) {
-        // CORREÇÃO: value é explicitamente Vec<u8> (Sized)
         Ok(Some(value)) => {
             let value_str = String::from_utf8_lossy(&value).to_string();
             HttpResponse::Ok().json(ApiResponse {
@@ -187,7 +185,6 @@ async fn delete_key(path: web::Path<String>, data: web::Data<AppState>) -> impl 
 
 #[get("/keys")]
 async fn list_keys(data: web::Data<AppState>) -> impl Responder {
-    // CORREÇÃO: Tipagem explícita para evitar erro de inferência
     match data.engine.keys() {
         Ok(keys) => {
             let filtered_keys: Vec<String> = keys
@@ -219,7 +216,6 @@ async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) 
 
     match results {
         Ok(records) => {
-            // CORREÇÃO: Tipagem explícita (String, Vec<u8>)
             let records_json: Vec<serde_json::Value> = records
                 .into_iter()
                 .map(|(k, v): (String, Vec<u8>)| {
@@ -248,7 +244,6 @@ async fn search_keys(query: web::Query<SearchQuery>, data: web::Data<AppState>) 
 async fn scan_all(data: web::Data<AppState>) -> impl Responder {
     match data.engine.scan() {
         Ok(records) => {
-            // CORREÇÃO: Tipagem explícita no filter e map
             let records_json: Vec<serde_json::Value> = records
                 .into_iter()
                 .filter(|(k, _): &(String, Vec<u8>)| !k.starts_with("feature:"))
@@ -273,8 +268,6 @@ async fn scan_all(data: web::Data<AppState>) -> impl Responder {
         }),
     }
 }
-
-// ==================== FEATURE FLAGS ====================
 
 #[get("/features")]
 async fn list_features(data: web::Data<AppState>) -> impl Responder {
@@ -331,16 +324,23 @@ async fn set_feature(
     }
 }
 
-// ==================== SERVER START ====================
-
-pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::Result<()> {
+pub async fn start_server(
+    engine: LsmEngine,
+    server_config: ServerConfig,
+) -> std::io::Result<()> {
     let engine = Arc::new(engine);
     let features = Arc::new(FeatureClient::new(
         Arc::clone(&engine),
-        Duration::from_secs(10),
+        Duration::from_secs(server_config.feature_cache_ttl_secs),
     ));
 
-    println!("🚀 API em http://{}:{}", host, port);
+    server_config.print_info();
+    println!("🚀 Starting server at {}:{}\n", server_config.host, server_config.port);
+
+    let max_json = server_config.max_json_payload_size;
+    let max_raw = server_config.max_raw_payload_size;
+    let host = server_config.host.clone();
+    let port = server_config.port;
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -354,6 +354,8 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
                 engine: Arc::clone(&engine),
                 features: Arc::clone(&features),
             }))
+            .app_data(web::JsonConfig::default().limit(max_json))
+            .app_data(web::PayloadConfig::default().limit(max_raw))
             .service(health)
             .service(get_stats)
             .service(get_stats_all)
@@ -366,7 +368,7 @@ pub async fn start_server(engine: LsmEngine, host: &str, port: u16) -> std::io::
             .service(list_features)
             .service(set_feature)
     })
-    .bind((host, port))?
+    .bind((host.as_str(), port))?
     .run()
     .await
 }

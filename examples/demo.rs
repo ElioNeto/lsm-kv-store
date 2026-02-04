@@ -1,136 +1,105 @@
-use lsm_kv_store::{LsmConfig, LsmEngine};
-use std::path::PathBuf;
+use lsm_kv_store::{LsmConfig, LsmEngine, Result};
+use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Inicializar tracing para ver logs internos
-    tracing_subscriber::fmt::init();
+fn main() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().to_path_buf();
 
-    println!("=== LSM-Tree Key-Value Store Demo ===\n");
+    // Part 1: Create and populate an LSM-tree database
+    println!("=== Part 1: Creating LSM-tree database ===");
+    let config = LsmConfig::builder()
+        .dir_path(path.clone())
+        .memtable_max_size(1024)
+        .build()?;
 
-    // Configuração personalizada (MemTable pequena para forçar flush)
-    let config = LsmConfig {
-        memtable_max_size: 200, // 200 bytes (pequeno para demonstração)
-        data_dir: PathBuf::from("./demo_data"),
-    };
-
-    // Criar/abrir o engine
-    println!("1. Inicializando LSM Engine...");
     let db = LsmEngine::new(config)?;
-    println!("{}\n", db.stats());
 
-    // === FEATURE 1: SET (Escrita) ===
-    println!("2. Testando SET (escrita):");
-    db.set("user:1".to_string(), b"Alice".to_vec())?;
-    db.set("user:2".to_string(), b"Bob".to_vec())?;
-    db.set("user:3".to_string(), b"Charlie".to_vec())?;
-    println!("   ✓ Inseridos: user:1, user:2, user:3");
-    println!("{}\n", db.stats());
+    // Insert some key-value pairs
+    println!("Inserting keys...");
+    db.set("apple".to_string(), b"A red fruit".to_vec())?;
+    db.set("banana".to_string(), b"A yellow fruit".to_vec())?;
+    db.set("cherry".to_string(), b"A small red fruit".to_vec())?;
 
-    // === FEATURE 2: GET (Leitura) ===
-    println!("3. Testando GET (leitura da MemTable):");
-    if let Some(value) = db.get("user:1")? {
-        println!("   user:1 = {}", String::from_utf8_lossy(&value));
+    // Read them back
+    if let Some(value) = db.get("apple")? {
+        println!("apple: {}", String::from_utf8_lossy(&value));
     }
-    if let Some(value) = db.get("user:2")? {
-        println!("   user:2 = {}", String::from_utf8_lossy(&value));
+
+    if let Some(value) = db.get("banana")? {
+        println!("banana: {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    // === FEATURE 3: Flush Automático (MemTable → SSTable) ===
-    println!("4. Forçando flush com dados grandes:");
-    db.set(
-        "product:1".to_string(),
-        b"Notebook Dell Inspiron 15 - 16GB RAM, 512GB SSD, Intel i7".to_vec(),
-    )?;
-    println!("   ✓ Flush automático disparado (MemTable atingiu limite)");
-    println!("{}\n", db.stats());
+    // Update a key
+    println!("\nUpdating 'banana'...");
+    db.set("banana".to_string(), b"A VERY yellow fruit".to_vec())?;
 
-    // === FEATURE 4: Leitura de SSTable (dados no disco) ===
-    println!("5. Lendo dados que foram para SSTable:");
-    if let Some(value) = db.get("user:1")? {
-        println!(
-            "   user:1 = {} (lido da SSTable)",
-            String::from_utf8_lossy(&value)
-        );
+    if let Some(value) = db.get("banana")? {
+        println!("banana (updated): {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    // === FEATURE 5: UPDATE (sobrescrever chave) ===
-    println!("6. Testando UPDATE (sobrescrever valor):");
-    db.set("user:1".to_string(), b"Alice Smith".to_vec())?;
-    if let Some(value) = db.get("user:1")? {
-        println!(
-            "   user:1 = {} (valor atualizado)",
-            String::from_utf8_lossy(&value)
-        );
+    // Delete a key
+    println!("\nDeleting 'cherry'...");
+    db.delete("cherry".to_string())?;
+
+    match db.get("cherry")? {
+        Some(_) => println!("cherry: still exists (unexpected!)"),
+        None => println!("cherry: deleted"),
     }
-    println!();
 
-    // === FEATURE 6: DELETE (Tombstone) ===
-    println!("7. Testando DELETE (tombstone):");
-    db.delete("user:2".to_string())?;
-    match db.get("user:2")? {
-        Some(_) => println!("   ✗ Erro: user:2 ainda existe"),
-        None => println!("   ✓ user:2 deletado com sucesso (tombstone criado)"),
+    // Insert more data to trigger automatic flush
+    println!("\n=== Part 2: Adding data (automatic flush will occur) ===");
+    for i in 0..100 {
+        let key = format!("key_{:03}", i);
+        let value = format!("value_{}", i);
+        db.set(key, value.into_bytes())?;
     }
-    println!();
 
-    // === FEATURE 7: Busca em chave inexistente (Bloom Filter) ===
-    println!("8. Testando busca em chave inexistente:");
-    println!("   Buscando 'nonexistent:key' (Bloom Filter deve evitar leitura de disco)");
-    match db.get("nonexistent:key")? {
-        Some(_) => println!("   ✗ Erro inesperado"),
-        None => println!("   ✓ Chave não encontrada (Bloom Filter funcionou)"),
+    println!("Data inserted (memtable will flush automatically when full)");
+
+    // Read some keys
+    if let Some(value) = db.get("key_042")? {
+        println!("key_042: {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    // === FEATURE 8: Múltiplas escritas (forçar mais flushes) ===
-    println!("9. Inserindo mais dados para criar múltiplas SSTables:");
-    for i in 10..15 {
-        db.set(format!("item:{}", i), format!("Value {}", i).into_bytes())?;
+    if let Some(value) = db.get("apple")? {
+        println!("apple: {}", String::from_utf8_lossy(&value));
     }
-    println!("   ✓ Inseridos: item:10 até item:14");
-    println!("{}\n", db.stats());
 
-    // === FEATURE 9: Ordem alfabética (BTreeMap) ===
-    println!("10. Demonstração de ordenação alfabética:");
-    db.set("zebra".to_string(), b"last".to_vec())?;
-    db.set("apple".to_string(), b"first".to_vec())?;
-    db.set("mango".to_string(), b"middle".to_vec())?;
-    println!("   ✓ Inseridos: zebra, apple, mango");
-    println!("   (MemTable mantém ordem: apple → mango → zebra)");
-    println!("{}\n", db.stats());
+    // Part 3: Add more data to create multiple levels
+    println!("\n=== Part 3: Adding more data ===");
+    for i in 100..200 {
+        let key = format!("key_{:03}", i);
+        let value = format!("value_{}", i);
+        db.set(key, value.into_bytes())?;
+    }
 
-    // === FEATURE 10: Persistência (simulação) ===
-    println!("11. Simulando reinício do sistema:");
-    println!("   Destruindo engine atual e recriando...");
+    println!("\nDatabase operations complete.");
+    println!("Total keys in database: ~200");
+
+    // Part 4: Reopen the database
+    println!("\n=== Part 4: Reopening database ===");
     drop(db);
 
-    let config2 = LsmConfig {
-        memtable_max_size: 200,
-        data_dir: PathBuf::from("./demo_data"),
-    };
+    let config2 = LsmConfig::builder()
+        .dir_path(path)
+        .memtable_max_size(1024)
+        .build()?;
+
     let db2 = LsmEngine::new(config2)?;
-    println!("   ✓ Engine recriado (WAL e SSTables recuperados)");
-    println!("{}\n", db2.stats());
 
-    // Verificar se dados persistiram
-    println!("12. Verificando persistência:");
-    if let Some(value) = db2.get("user:1")? {
-        println!("   user:1 = {} ✓", String::from_utf8_lossy(&value));
-    }
+    // Verify data persisted
     if let Some(value) = db2.get("apple")? {
-        println!("   apple = {} ✓", String::from_utf8_lossy(&value));
+        println!("apple (after reopen): {}", String::from_utf8_lossy(&value));
     }
-    if let Some(value) = db2.get("product:1")? {
-        println!("   product:1 = {} ✓", String::from_utf8_lossy(&value));
+
+    if let Some(value) = db2.get("key_042")? {
+        println!("key_042 (after reopen): {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    println!("=== Demo concluída com sucesso! ===");
-    println!("\nArquivos criados em: ./demo_data/");
-    println!("  - wal.log (Write-Ahead Log)");
-    println!("  - *.sst (SSTables imutáveis)");
+    if let Some(value) = db2.get("key_150")? {
+        println!("key_150 (after reopen): {}", String::from_utf8_lossy(&value));
+    }
 
+    println!("\n✅ Demo complete!");
     Ok(())
 }
