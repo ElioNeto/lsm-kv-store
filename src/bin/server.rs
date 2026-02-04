@@ -58,7 +58,8 @@ async fn main() -> std::io::Result<()> {
         .block_cache_size_mb(block_cache_size_mb)
         .sparse_index_interval(sparse_index_interval)
         .bloom_false_positive_rate(bloom_false_positive_rate)
-        .build();
+        .build()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
 
     // Print LSM configuration
     println!("📋 LSM Engine Configuration:");

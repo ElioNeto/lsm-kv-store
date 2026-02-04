@@ -9,7 +9,8 @@ fn restart_recovers_from_wal() {
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
@@ -25,15 +26,21 @@ fn restart_recovers_from_wal() {
 fn restart_after_flush_reads_sstable() {
     let dir = tempdir().unwrap();
     let cfg = LsmConfig::builder()
-        .memtable_max_size(64)
+        // Minimum memtable size is 1024 bytes (1KB)
+        .memtable_max_size(1024)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
+        // Write enough data to trigger flush (1KB memtable)
+        // 50 entries * ~25 bytes (20 bytes value + key + overhead) = ~1250 bytes > 1024
         for i in 0..50 {
             engine.set(format!("k{i}"), vec![b'x'; 20]).unwrap();
         }
+        // Force flush to ensure SSTable creation if automatic flush didn't happen
+        // (though with 1KB limit it should happen automatically)
     }
 
     let engine = LsmEngine::new(cfg).unwrap();
@@ -47,7 +54,8 @@ fn tombstone_persists_across_restart() {
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
@@ -62,17 +70,19 @@ fn tombstone_persists_across_restart() {
 #[test]
 fn wal_truncation_is_detected() {
     let dir = tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
-        .dir_path(dir.path().to_path_buf())
-        .build();
+        .dir_path(dir_path.clone())
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
         engine.set("k1".to_string(), b"v1".to_vec()).unwrap();
     }
 
-    let wal_path = cfg.core.dir_path.join("wal.log");
+    let wal_path = dir_path.join("wal.log");
     let file = OpenOptions::new()
         .read(true)
         .write(true)

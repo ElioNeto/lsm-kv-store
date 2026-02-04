@@ -20,6 +20,9 @@ bloomfilter = "3"
 # Compression
 lz4_flex = "0.11"
 
+# Caching
+lru = "0.12"
+
 # Error handling
 thiserror = "1.0"
 
