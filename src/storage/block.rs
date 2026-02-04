@@ -1,4 +1,4 @@
-use crate::StorageConfig;
+use crate::infra::config::StorageConfig;
 use std::mem::size_of;
 
 pub const BLOCK_SIZE: usize = 4096;
@@ -6,8 +6,8 @@ const U16_SIZE: usize = size_of::<u16>();
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    data: Vec<u8>,
-    offsets: Vec<u16>,
+    pub(crate) data: Vec<u8>,
+    pub(crate) offsets: Vec<u16>,
     block_size: usize,
 }
 
