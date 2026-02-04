@@ -33,6 +33,7 @@ impl CacheKey {
 
 /// Global shared block cache that is shared across all SSTable readers.
 /// Uses LRU eviction policy to manage memory usage.
+#[derive(Debug)]
 pub struct GlobalBlockCache {
     cache: Mutex<LruCache<CacheKey, Arc<Vec<u8>>>>,
 }
