@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
-const SST_MAGIC_V2: &[u8; 8] = b"LSMSST02";
+const SST_MAGIC_V2: &[u8; 8] = b"LSMSST03";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockMeta {
