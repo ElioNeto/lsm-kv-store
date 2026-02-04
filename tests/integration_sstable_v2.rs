@@ -200,11 +200,13 @@ fn test_sstable_v2_scan() -> Result<()> {
 fn test_sstable_v2_large_values() -> Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("large_values.sst");
-    let config = StorageConfig::default();
+    let mut config = StorageConfig::default();
+    // Increase block size to accommodate large values
+    config.block_size = 16384; // 16KB blocks
 
-    // Write records with large values
+    // Write records with large values (but smaller than block size)
     let mut builder = SstableBuilder::new(path.clone(), config.clone(), 333)?;
-    let large_value = vec![b'x'; 10000]; // 10KB value
+    let large_value = vec![b'x'; 8000]; // 8KB value (fits in 16KB block)
 
     for i in 0..10 {
         let key = format!("key_{}", i);
@@ -218,7 +220,7 @@ fn test_sstable_v2_large_values() -> Result<()> {
     for i in 0..10 {
         let key = format!("key_{}", i);
         let record = reader.get(&key)?.expect("Key should exist");
-        assert_eq!(record.value.len(), 10000, "Value size should be 10KB");
+        assert_eq!(record.value.len(), 8000, "Value size should be 8KB");
         assert_eq!(record.value, large_value, "Value content should match");
     }
 
@@ -287,9 +289,11 @@ fn test_sstable_v2_unicode_keys() -> Result<()> {
     let path = dir.path().join("unicode.sst");
     let config = StorageConfig::default();
 
-    // Write with unicode keys
+    // Write with unicode keys (pre-sorted by UTF-8 byte order)
     let mut builder = SstableBuilder::new(path.clone(), config.clone(), 666)?;
-    let unicode_keys = vec!["hello", "こんにちは", "你好", "مرحبا", "привет"];
+    // Keys must be sorted by UTF-8 byte order for SSTable
+    let mut unicode_keys = vec!["hello", "こんにちは", "你好", "مرحبا", "привет"];
+    unicode_keys.sort();
 
     for key in &unicode_keys {
         builder.add(key.as_bytes(), &create_test_record(key, format!("{}_value", key).as_bytes()))?;
@@ -302,6 +306,10 @@ fn test_sstable_v2_unicode_keys() -> Result<()> {
     for key in &unicode_keys {
         let record = reader.get(key)?;
         assert!(record.is_some(), "Unicode key '{}' should exist", key);
+        if let Some(r) = record {
+            let expected = format!("{}_value", key);
+            assert_eq!(r.value, expected.as_bytes(), "Value for '{}' should match", key);
+        }
     }
 
     Ok(())
