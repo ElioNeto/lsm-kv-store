@@ -16,6 +16,7 @@ const SST_MAGIC_V2: &[u8; 8] = b"LSMSST02";
 const FOOTER_SIZE: u64 = 8;
 
 /// SSTable V2 Reader with sparse index, Bloom filter, and block caching
+#[derive(Debug)]
 pub struct SstableReader {
     metadata: MetaBlock,
     bloom_filter: Bloom<[u8]>,
@@ -47,9 +48,8 @@ impl SstableReader {
         // Read and decompress metadata block
         let metadata = Self::read_meta_block(&mut file, meta_offset)?;
 
-        // Deserialize Bloom filter from stored bytes
-        let bloom_filter = Bloom::<[u8]>::from_bytes(&metadata.bloom_filter_data)
-            .map_err(|e| LsmError::CompactionFailed(format!("Bloom filter deserialization failed: {}", e)))?;
+        // Reconstruct Bloom filter from stored data
+        let bloom_filter = Self::reconstruct_bloom_filter(&metadata.bloom_filter_data)?;
 
         // Initialize LRU cache
         let cache_capacity = Self::calculate_cache_capacity(&config);
@@ -79,16 +79,16 @@ impl SstableReader {
 
         // Binary search on sparse index to find the block
         let block_meta = match self.binary_search_block(key.as_bytes()) {
-            Some(meta) => meta,
+            Some(meta) => meta.clone(),
             None => return Ok(None),
         };
 
         // Read and decompress the block (with caching)
-        let block_data = self.read_block(block_meta)?;
+        let block_data = self.read_block(&block_meta)?;
 
         // Deserialize block
         let block = Block::decode(&block_data);
-        
+
         // Linear scan within the block to find the key
         self.search_in_block(&block, key.as_bytes())
     }
@@ -151,7 +151,8 @@ impl SstableReader {
                 }
 
                 // Read key length
-                let key_len = u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
+                let key_len =
+                    u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
                 if offset + 2 + key_len + 2 > block.data.len() {
                     break;
                 }
@@ -217,8 +218,9 @@ impl SstableReader {
         file.read_exact(&mut compressed_meta)?;
 
         // Decompress metadata
-        let decompressed = decompress_size_prepended(&compressed_meta)
-            .map_err(|e| LsmError::DecompressionFailed(format!("Metadata decompression failed: {}", e)))?;
+        let decompressed = decompress_size_prepended(&compressed_meta).map_err(|e| {
+            LsmError::DecompressionFailed(format!("Metadata decompression failed: {}", e))
+        })?;
 
         // Deserialize metadata
         let metadata: MetaBlock = decode(&decompressed)?;
@@ -249,13 +251,12 @@ impl SstableReader {
         self.file.read_exact(&mut compressed_block)?;
 
         // Decompress block
-        let decompressed = decompress_size_prepended(&compressed_block)
-            .map_err(|e| {
-                LsmError::DecompressionFailed(format!(
-                    "Block decompression failed at offset {}: {}",
-                    block_meta.offset, e
-                ))
-            })?;
+        let decompressed = decompress_size_prepended(&compressed_block).map_err(|e| {
+            LsmError::DecompressionFailed(format!(
+                "Block decompression failed at offset {}: {}",
+                block_meta.offset, e
+            ))
+        })?;
 
         // Verify decompressed size matches metadata
         if decompressed.len() != block_meta.uncompressed_size as usize {
@@ -281,9 +282,10 @@ impl SstableReader {
         }
 
         // Binary search using partition_point to find the block where first_key <= search_key
-        let idx = self.metadata.blocks.partition_point(|block_meta| {
-            block_meta.first_key.as_slice() <= key
-        });
+        let idx = self
+            .metadata
+            .blocks
+            .partition_point(|block_meta| block_meta.first_key.as_slice() <= key);
 
         // If idx is 0, key is smaller than all first_keys
         if idx == 0 {
@@ -299,6 +301,32 @@ impl SstableReader {
         let avg_block_size = config.block_size;
         let capacity = (cache_size_bytes / avg_block_size).max(1);
         NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap())
+    }
+
+    fn reconstruct_bloom_filter(data: &[u8]) -> Result<Bloom<[u8]>> {
+        // The bloom filter data should contain: [bitmap_size (8 bytes)][items_count (8 bytes)][seed (32 bytes)][bitmap data...]
+        if data.len() < 48 {
+            return Err(LsmError::CorruptedData(
+                "Invalid bloom filter data".to_string(),
+            ));
+        }
+
+        let bitmap_size = u64::from_le_bytes([
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+        ]) as usize;
+
+        let items_count = u64::from_le_bytes([
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+        ]) as usize;
+
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&data[16..48]);
+
+        let bloom = Bloom::<[u8]>::new_with_seed(bitmap_size, items_count, &seed).map_err(|e| {
+            LsmError::CompactionFailed(format!("Bloom filter reconstruction failed: {}", e))
+        })?;
+
+        Ok(bloom)
     }
 }
 
@@ -320,9 +348,15 @@ mod tests {
 
         // Write SSTable
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 123).unwrap();
-        builder.add(b"key1", &create_test_record("key1", b"value1")).unwrap();
-        builder.add(b"key2", &create_test_record("key2", b"value2")).unwrap();
-        builder.add(b"key3", &create_test_record("key3", b"value3")).unwrap();
+        builder
+            .add(b"key1", &create_test_record("key1", b"value1"))
+            .unwrap();
+        builder
+            .add(b"key2", &create_test_record("key2", b"value2"))
+            .unwrap();
+        builder
+            .add(b"key3", &create_test_record("key3", b"value3"))
+            .unwrap();
         builder.finish().unwrap();
 
         // Read SSTable
@@ -352,7 +386,9 @@ mod tests {
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 456).unwrap();
         for i in 0..100 {
             let key = format!("key_{:03}", i);
-            builder.add(key.as_bytes(), &create_test_record(&key, b"value")).unwrap();
+            builder
+                .add(key.as_bytes(), &create_test_record(&key, b"value"))
+                .unwrap();
         }
         builder.finish().unwrap();
 
@@ -370,7 +406,11 @@ mod tests {
             .count();
 
         // With 1% FP rate and 100 checks, expect < 5 false positives
-        assert!(false_positive_count < 5, "Too many false positives: {}", false_positive_count);
+        assert!(
+            false_positive_count < 5,
+            "Too many false positives: {}",
+            false_positive_count
+        );
     }
 
     #[test]
@@ -385,7 +425,9 @@ mod tests {
         for i in 0..50 {
             let key = format!("key_{:03}", i);
             let value = vec![b'x'; 20];
-            builder.add(key.as_bytes(), &create_test_record(&key, &value)).unwrap();
+            builder
+                .add(key.as_bytes(), &create_test_record(&key, &value))
+                .unwrap();
         }
         builder.finish().unwrap();
 
@@ -406,27 +448,54 @@ mod tests {
 
         // Write records with boundary keys
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 111).unwrap();
-        builder.add(b"aaa", &create_test_record("aaa", b"first")).unwrap();
-        builder.add(b"mmm", &create_test_record("mmm", b"middle")).unwrap();
-        builder.add(b"zzz", &create_test_record("zzz", b"last")).unwrap();
+        builder
+            .add(b"aaa", &create_test_record("aaa", b"first"))
+            .unwrap();
+        builder
+            .add(b"mmm", &create_test_record("mmm", b"middle"))
+            .unwrap();
+        builder
+            .add(b"zzz", &create_test_record("zzz", b"last"))
+            .unwrap();
         builder.finish().unwrap();
 
         let mut reader = SstableReader::open(path, config).unwrap();
 
         // Test exact boundary keys
-        assert!(reader.get("aaa").unwrap().is_some(), "First key should exist");
-        assert!(reader.get("zzz").unwrap().is_some(), "Last key should exist");
+        assert!(
+            reader.get("aaa").unwrap().is_some(),
+            "First key should exist"
+        );
+        assert!(
+            reader.get("zzz").unwrap().is_some(),
+            "Last key should exist"
+        );
 
         // Test keys before first
-        assert!(reader.get("000").unwrap().is_none(), "Key before first should not exist");
-        assert!(reader.get("aa").unwrap().is_none(), "Key before first should not exist");
+        assert!(
+            reader.get("000").unwrap().is_none(),
+            "Key before first should not exist"
+        );
+        assert!(
+            reader.get("aa").unwrap().is_none(),
+            "Key before first should not exist"
+        );
 
         // Test keys after last
-        assert!(reader.get("zzzz").unwrap().is_none(), "Key after last should not exist");
+        assert!(
+            reader.get("zzzz").unwrap().is_none(),
+            "Key after last should not exist"
+        );
 
         // Test keys between boundaries
-        assert!(reader.get("bbb").unwrap().is_none(), "Non-existent key should not exist");
-        assert!(reader.get("mmm").unwrap().is_some(), "Middle key should exist");
+        assert!(
+            reader.get("bbb").unwrap().is_none(),
+            "Non-existent key should not exist"
+        );
+        assert!(
+            reader.get("mmm").unwrap().is_some(),
+            "Middle key should exist"
+        );
     }
 
     #[test]
@@ -438,9 +507,14 @@ mod tests {
         // Write ordered records
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 999).unwrap();
         let test_keys = vec!["apple", "banana", "cherry"];
-        
+
         for key in &test_keys {
-            builder.add(key.as_bytes(), &create_test_record(key, format!("{}_value", key).as_bytes())).unwrap();
+            builder
+                .add(
+                    key.as_bytes(),
+                    &create_test_record(key, format!("{}_value", key).as_bytes()),
+                )
+                .unwrap();
         }
         builder.finish().unwrap();
 
@@ -463,6 +537,9 @@ mod tests {
         let result = SstableReader::open(path, config);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), LsmError::InvalidSstableFormat(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            LsmError::InvalidSstableFormat(_)
+        ));
     }
 }
