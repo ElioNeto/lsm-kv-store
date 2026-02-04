@@ -1,9 +1,9 @@
 use crate::core::log_record::LogRecord;
 use crate::core::memtable::MemTable;
-use crate::infra::codec::decode;
 use crate::infra::config::LsmConfig;
 use crate::infra::error::{LsmError, Result};
-use crate::storage::sstable::SStable;
+use crate::storage::builder::SstableBuilder;
+use crate::storage::reader::SstableReader;
 use crate::storage::wal::WriteAheadLog;
 
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ pub struct LsmStats {
 pub struct LsmEngine {
     pub(crate) memtable: Mutex<MemTable>,
     pub(crate) wal: WriteAheadLog,
-    pub(crate) sstables: Mutex<Vec<SStable>>,
+    pub(crate) sstables: Mutex<Vec<SstableReader>>,
     pub(crate) dir_path: PathBuf,
     pub(crate) config: LsmConfig,
 }
@@ -46,14 +46,15 @@ impl LsmEngine {
             let entry = entry?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "sst") {
-                match SStable::load(&path) {
+                match SstableReader::open(path.clone(), config.storage.clone()) {
                     Ok(sst) => sstables.push(sst),
                     Err(e) => warn!("Failed to load SSTable {}: {}", path.display(), e),
                 }
             }
         }
 
-        sstables.sort_by(|a, b| b.metadata.timestamp.cmp(&a.metadata.timestamp));
+        // Sort by timestamp descending (newest first)
+        sstables.sort_by(|a, b| b.metadata().timestamp.cmp(&a.metadata().timestamp));
 
         let mut memtable = MemTable::new(config.core.memtable_max_size);
         for record in wal_records {
@@ -81,7 +82,7 @@ impl LsmEngine {
             .map_err(|_| LsmError::LockPoisoned("memtable"))
     }
 
-    fn sstables_lock(&self) -> Result<MutexGuard<'_, Vec<SStable>>> {
+    fn sstables_lock(&self) -> Result<MutexGuard<'_, Vec<SstableReader>>> {
         self.sstables
             .lock()
             .map_err(|_| LsmError::LockPoisoned("sstables"))
@@ -128,7 +129,7 @@ impl LsmEngine {
         }
         drop(memtable);
 
-        // 2. Verificar SSTables (da mais recente para a mais antiga)
+        // 2. Check SSTables (newest to oldest)
         let mut sstables = self.sstables_lock()?;
         for sst in sstables.iter_mut() {
             if let Some(record) = sst.get(key)? {
@@ -189,11 +190,21 @@ impl LsmEngine {
         }
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let filename = format!("{}.sst", timestamp);
+        let path = self.dir_path.join(filename);
 
-        let sst = SStable::create(&self.dir_path, timestamp, &self.config.storage, &records)?;
+        // Create new SSTable using Builder (V2)
+        let mut builder = SstableBuilder::new(path, self.config.storage.clone(), timestamp)?;
+        for (key, record) in records {
+            builder.add(key.as_bytes(), &record)?;
+        }
+        let sst_path = builder.finish()?;
+
+        // Open the new SSTable as Reader (V2)
+        let reader = SstableReader::open(sst_path, self.config.storage.clone())?;
 
         let mut sstables = self.sstables_lock()?;
-        sstables.insert(0, sst);
+        sstables.insert(0, reader);
         let cleared = memtable.clear();
 
         info!(
@@ -222,11 +233,12 @@ impl LsmEngine {
         }
         drop(memtable);
 
-        let sstables = self.sstables_lock()?;
-        for sst in sstables.iter() {
-            let records = self.read_all_from_sstable(sst)?;
-            for record in records {
-                result_map.entry(record.key.clone()).or_insert((
+        let mut sstables = self.sstables_lock()?;
+        for sst in sstables.iter_mut() {
+            let records = sst.scan()?;
+            for (key_bytes, record) in records {
+                let key = String::from_utf8(key_bytes).map_err(|e| LsmError::CorruptedData(e.to_string()))?;
+                result_map.entry(key).or_insert((
                     record.value,
                     record.timestamp,
                     record.is_deleted,
@@ -248,35 +260,6 @@ impl LsmEngine {
 
         results.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(results)
-    }
-
-    fn read_all_from_sstable(&self, sst: &SStable) -> Result<Vec<LogRecord>> {
-        use std::fs::File;
-        use std::io::{BufReader, Read, Seek, SeekFrom};
-
-        let mut file = BufReader::new(File::open(&sst.path)?);
-        file.seek(SeekFrom::Current(8))?;
-
-        let mut len_buf = [0u8; 4];
-
-        file.read_exact(&mut len_buf)?;
-        let bloom_len = u32::from_le_bytes(len_buf) as usize;
-        file.seek(SeekFrom::Current(bloom_len as i64))?;
-
-        file.read_exact(&mut len_buf)?;
-        let meta_len = u32::from_le_bytes(len_buf) as usize;
-        file.seek(SeekFrom::Current(meta_len as i64))?;
-
-        let mut records = Vec::new();
-        for _ in 0..sst.metadata.record_count {
-            file.read_exact(&mut len_buf)?;
-            let record_len = u32::from_le_bytes(len_buf) as usize;
-            let mut record_data = vec![0u8; record_len];
-            file.read_exact(&mut record_data)?;
-            let record: LogRecord = decode(&record_data)?;
-            records.push(record);
-        }
-        Ok(records)
     }
 
     pub fn keys(&self) -> Result<Vec<String>> {
@@ -313,12 +296,12 @@ impl LsmEngine {
         let mem_records = memtable.data.len();
         let sst_records_total: u64 = sstables
             .iter()
-            .map(|s| s.metadata.record_count as u64)
+            .map(|s| s.metadata().record_count)
             .sum();
 
         let sst_bytes_total: u64 = sstables
             .iter()
-            .map(|s| std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0))
+            .map(|s| std::fs::metadata(s.path()).map(|m| m.len()).unwrap_or(0))
             .sum();
 
         let wal_bytes: u64 = std::fs::metadata(&self.wal.path)
