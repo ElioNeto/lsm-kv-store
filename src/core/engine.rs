@@ -3,12 +3,13 @@ use crate::core::memtable::MemTable;
 use crate::infra::config::LsmConfig;
 use crate::infra::error::{LsmError, Result};
 use crate::storage::builder::SstableBuilder;
+use crate::storage::cache::GlobalBlockCache;
 use crate::storage::reader::SstableReader;
 use crate::storage::wal::WriteAheadLog;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -30,6 +31,7 @@ pub struct LsmEngine {
     pub(crate) memtable: Mutex<MemTable>,
     pub(crate) wal: WriteAheadLog,
     pub(crate) sstables: Mutex<Vec<SstableReader>>,
+    pub(crate) block_cache: Arc<GlobalBlockCache>,
     pub(crate) dir_path: PathBuf,
     pub(crate) config: LsmConfig,
 }
@@ -37,6 +39,12 @@ pub struct LsmEngine {
 impl LsmEngine {
     pub fn new(config: LsmConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.core.dir_path)?;
+
+        // Create global shared block cache
+        let block_cache = GlobalBlockCache::new(
+            config.storage.block_cache_size_mb,
+            config.storage.block_size,
+        );
 
         let wal = WriteAheadLog::new(&config.core.dir_path)?;
         let wal_records = wal.recover()?;
@@ -46,7 +54,11 @@ impl LsmEngine {
             let entry = entry?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "sst") {
-                match SstableReader::open(path.clone(), config.storage.clone()) {
+                match SstableReader::open(
+                    path.clone(),
+                    config.storage.clone(),
+                    Arc::clone(&block_cache),
+                ) {
                     Ok(sst) => sstables.push(sst),
                     Err(e) => warn!("Failed to load SSTable {}: {}", path.display(), e),
                 }
@@ -62,15 +74,17 @@ impl LsmEngine {
         }
 
         info!(
-            "LSM Engine initialized: {} sstables, memtable={} records",
+            "LSM Engine initialized: {} sstables, memtable={} records, cache={}MB",
             sstables.len(),
-            memtable.data.len()
+            memtable.data.len(),
+            config.storage.block_cache_size_mb
         );
 
         Ok(Self {
             memtable: Mutex::new(memtable),
             wal,
             sstables: Mutex::new(sstables),
+            block_cache,
             dir_path: config.core.dir_path.clone(),
             config,
         })
@@ -200,8 +214,12 @@ impl LsmEngine {
         }
         let sst_path = builder.finish()?;
 
-        // Open the new SSTable as Reader (V2)
-        let reader = SstableReader::open(sst_path, self.config.storage.clone())?;
+        // Open the new SSTable as Reader (V2) with shared cache
+        let reader = SstableReader::open(
+            sst_path,
+            self.config.storage.clone(),
+            Arc::clone(&self.block_cache),
+        )?;
 
         let mut sstables = self.sstables_lock()?;
         sstables.insert(0, reader);
@@ -281,11 +299,15 @@ impl LsmEngine {
             Err(e) => return format!("LSM Stats error: {e}"),
         };
 
+        let cache_stats = self.block_cache.stats();
+
         format!(
-            "LSM Stats:\n MemTable: {} records, ~{} KB\n SSTables: {} files",
+            "LSM Stats:\n MemTable: {} records, ~{} KB\n SSTables: {} files\n Cache: {}/{} blocks",
             memtable.data.len(),
             memtable.size_bytes / 1024,
-            sstables.len()
+            sstables.len(),
+            cache_stats.len,
+            cache_stats.cap
         )
     }
 
