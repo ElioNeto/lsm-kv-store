@@ -9,7 +9,8 @@ fn restart_recovers_from_wal() {
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
@@ -27,7 +28,8 @@ fn restart_after_flush_reads_sstable() {
     let cfg = LsmConfig::builder()
         .memtable_max_size(64)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
@@ -47,7 +49,8 @@ fn tombstone_persists_across_restart() {
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
         .dir_path(dir.path().to_path_buf())
-        .build();
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
@@ -62,17 +65,19 @@ fn tombstone_persists_across_restart() {
 #[test]
 fn wal_truncation_is_detected() {
     let dir = tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
     let cfg = LsmConfig::builder()
         .memtable_max_size(1024 * 1024)
-        .dir_path(dir.path().to_path_buf())
-        .build();
+        .dir_path(dir_path.clone())
+        .build()
+        .unwrap();
 
     {
         let engine = LsmEngine::new(cfg.clone()).unwrap();
         engine.set("k1".to_string(), b"v1".to_vec()).unwrap();
     }
 
-    let wal_path = cfg.core.dir_path.join("wal.log");
+    let wal_path = dir_path.join("wal.log");
     let file = OpenOptions::new()
         .read(true)
         .write(true)
