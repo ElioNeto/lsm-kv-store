@@ -95,39 +95,36 @@ impl SstableReader {
 
     /// Search for a key within a decoded block
     fn search_in_block(&self, block: &Block, key: &[u8]) -> Result<Option<LogRecord>> {
-        // Manually iterate through block entries
-        let data = &block.data;
-        let offsets = &block.offsets;
-
-        for &offset in offsets {
+        // Access block data through pub(crate) fields
+        for &offset in &block.offsets {
             let offset = offset as usize;
-            if offset + 2 > data.len() {
+            if offset + 2 > block.data.len() {
                 break;
             }
 
             // Read key length
-            let key_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-            if offset + 2 + key_len + 2 > data.len() {
+            let key_len = u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
+            if offset + 2 + key_len + 2 > block.data.len() {
                 break;
             }
 
             // Read key
-            let entry_key = &data[offset + 2..offset + 2 + key_len];
+            let entry_key = &block.data[offset + 2..offset + 2 + key_len];
 
             if entry_key == key {
                 // Read value length
                 let val_len_offset = offset + 2 + key_len;
                 let val_len = u16::from_le_bytes([
-                    data[val_len_offset],
-                    data[val_len_offset + 1],
+                    block.data[val_len_offset],
+                    block.data[val_len_offset + 1],
                 ]) as usize;
 
-                if val_len_offset + 2 + val_len > data.len() {
+                if val_len_offset + 2 + val_len > block.data.len() {
                     break;
                 }
 
                 // Read value
-                let entry_value = &data[val_len_offset + 2..val_len_offset + 2 + val_len];
+                let entry_value = &block.data[val_len_offset + 2..val_len_offset + 2 + val_len];
 
                 // Decode the LogRecord from value
                 let record: LogRecord = decode(entry_value)?;
@@ -146,38 +143,35 @@ impl SstableReader {
             let block_data = self.read_block(block_meta)?;
             let block = Block::decode(&block_data);
 
-            // Manually iterate through block entries
-            let data = &block.data;
-            let offsets = &block.offsets;
-
-            for &offset in offsets {
+            // Access block data through pub(crate) fields
+            for &offset in &block.offsets {
                 let offset = offset as usize;
-                if offset + 2 > data.len() {
+                if offset + 2 > block.data.len() {
                     break;
                 }
 
                 // Read key length
-                let key_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-                if offset + 2 + key_len + 2 > data.len() {
+                let key_len = u16::from_le_bytes([block.data[offset], block.data[offset + 1]]) as usize;
+                if offset + 2 + key_len + 2 > block.data.len() {
                     break;
                 }
 
                 // Read key
-                let key = data[offset + 2..offset + 2 + key_len].to_vec();
+                let key = block.data[offset + 2..offset + 2 + key_len].to_vec();
 
                 // Read value length
                 let val_len_offset = offset + 2 + key_len;
                 let val_len = u16::from_le_bytes([
-                    data[val_len_offset],
-                    data[val_len_offset + 1],
+                    block.data[val_len_offset],
+                    block.data[val_len_offset + 1],
                 ]) as usize;
 
-                if val_len_offset + 2 + val_len > data.len() {
+                if val_len_offset + 2 + val_len > block.data.len() {
                     break;
                 }
 
                 // Read value
-                let value = &data[val_len_offset + 2..val_len_offset + 2 + val_len];
+                let value = &block.data[val_len_offset + 2..val_len_offset + 2 + val_len];
 
                 // Decode the LogRecord from value
                 let record: LogRecord = decode(value)?;
@@ -307,24 +301,6 @@ impl SstableReader {
         NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap())
     }
 }
-
-// Make Block fields accessible for reader
-mod block_access {
-    use crate::storage::block::Block;
-
-    impl Block {
-        pub fn data(&self) -> &Vec<u8> {
-            &self.data
-        }
-
-        pub fn offsets(&self) -> &Vec<u16> {
-            &self.offsets
-        }
-    }
-}
-
-// Re-export for internal use
-use block_access::*;
 
 #[cfg(test)]
 mod tests {
