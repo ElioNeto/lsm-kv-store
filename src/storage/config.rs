@@ -1,8 +1,18 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompactionStrategy {
+    SizeTiered,
+    Leveled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub block_size: usize,
     pub block_cache_size_mb: usize,
     pub sparse_index_interval: usize,
     pub compaction_strategy: CompactionStrategy,
+    pub bloom_false_positive_rate: f64,
 }
 
 impl Default for StorageConfig {
@@ -12,13 +22,7 @@ impl Default for StorageConfig {
             block_cache_size_mb: 64,
             sparse_index_interval: 16,
             compaction_strategy: CompactionStrategy::SizeTiered,
+            bloom_false_positive_rate: 0.01,
         }
     }
-}
-
-// src/core/engine.rs
-pub struct LsmConfig {
-    pub dir_path: PathBuf,
-    pub memtable_max_size: usize,
-    pub storage: StorageConfig, // ✅ Composição
 }
