@@ -94,7 +94,7 @@ We are committed to providing a welcoming and inspiring community for all. We pl
    cargo test
    ```
 
-For detailed setup instructions, see [SETUP.md](SETUP.md).
+For detailed setup instructions, see [SETUP.md](docs/SETUP.md).
 
 ---
 
