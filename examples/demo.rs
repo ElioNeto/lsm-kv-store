@@ -1,122 +1,110 @@
-use lsm_kv_store::{LsmConfig, LsmEngine};
+use lsm_kv_store::{LsmConfig, LsmEngine, Result};
 use std::path::PathBuf;
+use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+fn main() -> Result<()> {
+    let dir = tempdir()?;
+    let path = dir.path().to_path_buf();
 
-    println!("=== LSM-Tree Key-Value Store Demo ===\n");
-
+    // Part 1: Create and populate an LSM-tree database
+    println!("=== Part 1: Creating LSM-tree database ===");
     let config = LsmConfig::builder()
-        .memtable_max_size(200)
-        .dir_path(PathBuf::from("./demo_data"))
-        .build();
+        .dir_path(path.clone())
+        .memtable_max_size(1024)
+        .build()?;
 
-    println!("1. Initializing LSM Engine...");
     let db = LsmEngine::new(config)?;
-    println!("{}\n", db.stats());
 
-    println!("2. Testing SET (write):");
-    db.set("user:1".to_string(), b"Alice".to_vec())?;
-    db.set("user:2".to_string(), b"Bob".to_vec())?;
-    db.set("user:3".to_string(), b"Charlie".to_vec())?;
-    println!("   ✓ Inserted: user:1, user:2, user:3");
-    println!("{}\n", db.stats());
+    // Insert some key-value pairs
+    println!("Inserting keys...");
+    db.set("apple".to_string(), b"A red fruit".to_vec())?;
+    db.set("banana".to_string(), b"A yellow fruit".to_vec())?;
+    db.set("cherry".to_string(), b"A small red fruit".to_vec())?;
 
-    println!("3. Testing GET (read from MemTable):");
-    if let Some(value) = db.get("user:1")? {
-        println!("   user:1 = {}", String::from_utf8_lossy(&value));
+    // Read them back
+    if let Some(value) = db.get("apple")? {
+        println!("apple: {}", String::from_utf8_lossy(&value));
     }
-    if let Some(value) = db.get("user:2")? {
-        println!("   user:2 = {}", String::from_utf8_lossy(&value));
+
+    if let Some(value) = db.get("banana")? {
+        println!("banana: {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    println!("4. Forcing flush with large data:");
-    db.set(
-        "product:1".to_string(),
-        b"Notebook Dell Inspiron 15 - 16GB RAM, 512GB SSD, Intel i7".to_vec(),
-    )?;
-    println!("   ✓ Automatic flush triggered (MemTable reached limit)");
-    println!("{}\n", db.stats());
+    // Update a key
+    println!("\nUpdating 'banana'...");
+    db.set("banana".to_string(), b"A VERY yellow fruit".to_vec())?;
 
-    println!("5. Reading data from SSTable:");
-    if let Some(value) = db.get("user:1")? {
-        println!(
-            "   user:1 = {} (read from SSTable)",
-            String::from_utf8_lossy(&value)
-        );
+    if let Some(value) = db.get("banana")? {
+        println!("banana (updated): {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    println!("6. Testing UPDATE (overwrite value):");
-    db.set("user:1".to_string(), b"Alice Smith".to_vec())?;
-    if let Some(value) = db.get("user:1")? {
-        println!(
-            "   user:1 = {} (value updated)",
-            String::from_utf8_lossy(&value)
-        );
+    // Delete a key
+    println!("\nDeleting 'cherry'...");
+    db.delete("cherry".to_string())?;
+
+    match db.get("cherry")? {
+        Some(_) => println!("cherry: still exists (unexpected!)"),
+        None => println!("cherry: deleted"),
     }
-    println!();
 
-    println!("7. Testing DELETE (tombstone):");
-    db.delete("user:2".to_string())?;
-    match db.get("user:2")? {
-        Some(_) => println!("   ✗ Error: user:2 still exists"),
-        None => println!("   ✓ user:2 deleted successfully (tombstone created)"),
+    // Insert more data to trigger flush
+    println!("\n=== Part 2: Triggering flush to SSTable ===");
+    for i in 0..100 {
+        let key = format!("key_{:03}", i);
+        let value = format!("value_{}", i);
+        db.set(key, value.into_bytes())?;
     }
-    println!();
 
-    println!("8. Testing search for non-existent key:");
-    println!("   Searching 'nonexistent:key' (Bloom Filter should prevent disk read)");
-    match db.get("nonexistent:key")? {
-        Some(_) => println!("   ✗ Unexpected error"),
-        None => println!("   ✓ Key not found (Bloom Filter worked)"),
+    // Flush manually
+    println!("Flushing memtable to SSTable...");
+    db.flush()?;
+
+    // Read some keys
+    if let Some(value) = db.get("key_042")? {
+        println!("key_042: {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    println!("9. Inserting more data to create multiple SSTables:");
-    for i in 10..15 {
-        db.set(format!("item:{}", i), format!("Value {}", i).into_bytes())?;
+    if let Some(value) = db.get("apple")? {
+        println!("apple: {}", String::from_utf8_lossy(&value));
     }
-    println!("   ✓ Inserted: item:10 to item:14");
-    println!("{}\n", db.stats());
 
-    println!("10. Demonstrating alphabetical ordering:");
-    db.set("zebra".to_string(), b"last".to_vec())?;
-    db.set("apple".to_string(), b"first".to_vec())?;
-    db.set("mango".to_string(), b"middle".to_vec())?;
-    println!("   ✓ Inserted: zebra, apple, mango");
-    println!("   (MemTable maintains order: apple → mango → zebra)");
-    println!("{}\n", db.stats());
+    // Part 3: Trigger compaction by adding multiple levels
+    println!("\n=== Part 3: Adding more data ===");
+    for i in 100..200 {
+        let key = format!("key_{:03}", i);
+        let value = format!("value_{}", i);
+        db.set(key, value.into_bytes())?;
+    }
 
-    println!("11. Simulating system restart:");
-    println!("   Destroying current engine and recreating...");
+    db.flush()?;
+
+    println!("\nDatabase operations complete.");
+    println!("Total keys in database: ~200");
+
+    // Part 4: Reopen the database
+    println!("\n=== Part 4: Reopening database ===");
     drop(db);
 
     let config2 = LsmConfig::builder()
-        .memtable_max_size(200)
-        .dir_path(PathBuf::from("./demo_data"))
-        .build();
+        .dir_path(path)
+        .memtable_max_size(1024)
+        .build()?;
+
     let db2 = LsmEngine::new(config2)?;
-    println!("   ✓ Engine recreated (WAL and SSTables recovered)");
-    println!("{}\n", db2.stats());
 
-    println!("12. Verifying persistence:");
-    if let Some(value) = db2.get("user:1")? {
-        println!("   user:1 = {} ✓", String::from_utf8_lossy(&value));
-    }
+    // Verify data persisted
     if let Some(value) = db2.get("apple")? {
-        println!("   apple = {} ✓", String::from_utf8_lossy(&value));
+        println!("apple (after reopen): {}", String::from_utf8_lossy(&value));
     }
-    if let Some(value) = db2.get("product:1")? {
-        println!("   product:1 = {} ✓", String::from_utf8_lossy(&value));
+
+    if let Some(value) = db2.get("key_042")? {
+        println!("key_042 (after reopen): {}", String::from_utf8_lossy(&value));
     }
-    println!();
 
-    println!("=== Demo completed successfully! ===");
-    println!("\nFiles created in: ./demo_data/");
-    println!("  - wal.log (Write-Ahead Log)");
-    println!("  - *.sst (Immutable SSTables)");
+    if let Some(value) = db2.get("key_150")? {
+        println!("key_150 (after reopen): {}", String::from_utf8_lossy(&value));
+    }
 
+    println!("\n✅ Demo complete!");
     Ok(())
 }
