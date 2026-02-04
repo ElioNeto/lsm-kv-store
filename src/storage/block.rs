@@ -2,12 +2,12 @@ use crate::infra::config::StorageConfig;
 use std::mem::size_of;
 
 pub const BLOCK_SIZE: usize = 4096;
-const U16_SIZE: usize = size_of::<u16>();
+const U32_SIZE: usize = size_of::<u32>();
 
 #[derive(Debug, Clone)]
 pub struct Block {
     pub(crate) data: Vec<u8>,
-    pub(crate) offsets: Vec<u16>,
+    pub(crate) offsets: Vec<u32>,
     block_size: usize,
 }
 
@@ -25,11 +25,15 @@ impl Block {
     }
 
     fn entry_size(key: &[u8], value: &[u8]) -> usize {
-        U16_SIZE + key.len() + U16_SIZE + value.len()
+        // KeyLen(2) + Key + ValLen(2) + Value
+        // Note: Using u16 for key/value length storage within the block data
+        // to maintain compactness for individual entries, while allowing
+        // the overall block to be larger than 64KB via u32 offsets.
+        2 + key.len() + 2 + value.len()
     }
 
     fn metadata_size(num_entries: usize) -> usize {
-        (num_entries * U16_SIZE) + U16_SIZE
+        (num_entries * U32_SIZE) + U32_SIZE
     }
 
     fn current_size(&self) -> usize {
@@ -38,16 +42,18 @@ impl Block {
 
     pub fn add(&mut self, key: &[u8], value: &[u8]) -> bool {
         let entry_size = Self::entry_size(key, value);
-        let new_offset_size = U16_SIZE;
+        let new_offset_size = U32_SIZE;
         let total_needed = self.current_size() + entry_size + new_offset_size;
 
         if total_needed > self.block_size {
             return false;
         }
 
-        let offset = self.data.len() as u16;
+        let offset = self.data.len() as u32;
         self.offsets.push(offset);
 
+        // Cast to u16 is safe for key/value lengths as we assume
+        // individual entries don't exceed 64KB, even if the block does.
         let key_len = key.len() as u16;
         let val_len = value.len() as u16;
 
@@ -67,14 +73,14 @@ impl Block {
             encoded.extend_from_slice(&offset.to_le_bytes());
         }
 
-        let num_elements = self.offsets.len() as u16;
+        let num_elements = self.offsets.len() as u32;
         encoded.extend_from_slice(&num_elements.to_le_bytes());
 
         encoded
     }
 
     pub fn decode(data: &[u8]) -> Self {
-        if data.len() < U16_SIZE {
+        if data.len() < U32_SIZE {
             return Self {
                 data: Vec::new(),
                 offsets: Vec::new(),
@@ -82,20 +88,20 @@ impl Block {
             };
         }
 
-        let num_elements_start = data.len() - U16_SIZE;
+        let num_elements_start = data.len() - U32_SIZE;
         let num_elements =
-            u16::from_le_bytes([data[num_elements_start], data[num_elements_start + 1]]) as usize;
+            u32::from_le_bytes([data[num_elements_start], data[num_elements_start + 1], data[num_elements_start + 2], data[num_elements_start + 3]]) as usize;
 
-        let offsets_start = data.len() - U16_SIZE - (num_elements * U16_SIZE);
+        let offsets_start = data.len() - U32_SIZE - (num_elements * U32_SIZE);
         let records_data = data[..offsets_start].to_vec();
 
         let mut offsets = Vec::with_capacity(num_elements);
         let mut offset_pos = offsets_start;
 
         for _ in 0..num_elements {
-            let offset = u16::from_le_bytes([data[offset_pos], data[offset_pos + 1]]);
+            let offset = u32::from_le_bytes([data[offset_pos], data[offset_pos + 1], data[offset_pos + 2], data[offset_pos + 3]]);
             offsets.push(offset);
-            offset_pos += U16_SIZE;
+            offset_pos += U32_SIZE;
         }
 
         Self {
@@ -176,6 +182,41 @@ mod tests {
 
         let result = block.add(b"extra_key", b"extra_value");
         assert!(!result, "Should reject entry when block is full");
+    }
+
+    #[test]
+    fn test_block_overflow_u16() {
+        // Create a block larger than 64KB (u16::MAX is 65535)
+        let block_size = 70_000;
+        let mut block = Block::new(block_size);
+
+        // Fill with enough data to exceed 64KB
+        // Each entry approx 1024 bytes
+        let val_size = 1000;
+        let large_value = vec![b'x'; val_size];
+        let key_base = "key";
+
+        let mut count = 0;
+        while block.data_size() < 66000 {
+             let key = format!("{}{}", key_base, count);
+             if !block.add(key.as_bytes(), &large_value) {
+                 break;
+             }
+             count += 1;
+        }
+
+        assert!(block.data_size() > 65535, "Block data size should be > 64KB");
+
+        // Verify integrity
+        let encoded = block.encode();
+        let decoded = Block::decode(&encoded);
+
+        assert_eq!(decoded.len(), block.len());
+        assert_eq!(decoded.offsets.len(), block.offsets.len());
+
+        // Verify last entry is correct
+        let last_offset = *decoded.offsets.last().unwrap();
+        assert!(last_offset > 65535, "Last offset should exceed u16 limit");
     }
 
     #[test]

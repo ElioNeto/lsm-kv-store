@@ -12,7 +12,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-const SST_MAGIC_V2: &[u8; 8] = b"LSMSST02";
+const SST_MAGIC_V2: &[u8; 8] = b"LSMSST03";
 const FOOTER_SIZE: u64 = 8;
 
 /// SSTable V2 Reader with sparse index, Bloom filter, and block caching
