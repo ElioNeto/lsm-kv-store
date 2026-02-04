@@ -4,32 +4,41 @@ use crate::infra::config::StorageConfig;
 use crate::infra::error::{LsmError, Result};
 use crate::storage::block::Block;
 use crate::storage::builder::{BlockMeta, MetaBlock};
+use crate::storage::cache::{CacheKey, GlobalBlockCache};
 use bloomfilter::Bloom;
-use lru::LruCache;
 use lz4_flex::decompress_size_prepended;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const SST_MAGIC_V2: &[u8; 8] = b"LSMSST03";
 const FOOTER_SIZE: u64 = 8;
 
-/// SSTable V2 Reader with sparse index, Bloom filter, and block caching
+/// SSTable V2 Reader with sparse index, Bloom filter, and shared global block caching
 #[derive(Debug)]
 pub struct SstableReader {
     metadata: MetaBlock,
     bloom_filter: Bloom<[u8]>,
     file: File,
-    block_cache: LruCache<u64, Vec<u8>>,
+    block_cache: Arc<GlobalBlockCache>,
     path: PathBuf,
     #[allow(dead_code)]
     config: StorageConfig,
 }
 
 impl SstableReader {
-    /// Open an SSTable V2 file for reading
-    pub fn open(path: PathBuf, config: StorageConfig) -> Result<Self> {
+    /// Open an SSTable V2 file for reading with a shared block cache
+    ///
+    /// # Arguments
+    /// * `path` - Path to the SSTable file
+    /// * `config` - Storage configuration
+    /// * `block_cache` - Shared global block cache
+    pub fn open(
+        path: PathBuf,
+        config: StorageConfig,
+        block_cache: Arc<GlobalBlockCache>,
+    ) -> Result<Self> {
         let mut file = File::open(&path)?;
 
         // Verify magic number
@@ -53,10 +62,6 @@ impl SstableReader {
             Bloom::<[u8]>::from_bytes(metadata.bloom_filter_data.clone()).map_err(|e| {
                 LsmError::CompactionFailed(format!("Bloom filter deserialization failed: {}", e))
             })?;
-
-        // Initialize LRU cache
-        let cache_capacity = Self::calculate_cache_capacity(&config);
-        let block_cache = LruCache::new(cache_capacity);
 
         Ok(Self {
             metadata,
@@ -234,16 +239,19 @@ impl SstableReader {
     }
 
     fn read_block(&mut self, block_meta: &BlockMeta) -> Result<Vec<u8>> {
-        // Check cache first
-        if let Some(cached) = self.block_cache.get(&block_meta.offset) {
-            return Ok(cached.clone());
+        // Create cache key with file path and block offset
+        let cache_key = CacheKey::new(&self.path, block_meta.offset);
+
+        // Check shared cache first
+        if let Some(cached) = self.block_cache.get(&cache_key) {
+            return Ok((*cached).clone());
         }
 
         // Cache miss - read from disk
         let block_data = self.read_and_decompress_block(block_meta)?;
 
-        // Store in cache
-        self.block_cache.put(block_meta.offset, block_data.clone());
+        // Store in shared cache
+        self.block_cache.put(cache_key, block_data.clone());
 
         Ok(block_data)
     }
@@ -301,13 +309,6 @@ impl SstableReader {
         // Return the block at idx - 1 (the last block where first_key <= search_key)
         Some(&self.metadata.blocks[idx - 1])
     }
-
-    fn calculate_cache_capacity(config: &StorageConfig) -> NonZeroUsize {
-        let cache_size_bytes = config.block_cache_size_mb * 1024 * 1024;
-        let avg_block_size = config.block_size;
-        let capacity = (cache_size_bytes / avg_block_size).max(1);
-        NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap())
-    }
 }
 
 #[cfg(test)]
@@ -320,11 +321,16 @@ mod tests {
         LogRecord::new(key.to_string(), value.to_vec())
     }
 
+    fn create_test_cache(config: &StorageConfig) -> Arc<GlobalBlockCache> {
+        GlobalBlockCache::new(config.block_cache_size_mb, config.block_size)
+    }
+
     #[test]
     fn test_reader_basic_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.sst");
         let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
 
         // Write SSTable
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 123).unwrap();
@@ -340,7 +346,7 @@ mod tests {
         builder.finish().unwrap();
 
         // Read SSTable
-        let mut reader = SstableReader::open(path, config).unwrap();
+        let mut reader = SstableReader::open(path, config, cache).unwrap();
 
         // Verify reads
         let record1 = reader.get("key1").unwrap().unwrap();
@@ -361,6 +367,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bloom_test.sst");
         let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
 
         // Write SSTable with known keys
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 456).unwrap();
@@ -373,7 +380,7 @@ mod tests {
         builder.finish().unwrap();
 
         // Read and test Bloom filter
-        let reader = SstableReader::open(path, config).unwrap();
+        let reader = SstableReader::open(path, config, cache).unwrap();
 
         // Keys that exist should pass Bloom filter
         assert!(reader.might_contain("key_000"));
@@ -399,6 +406,7 @@ mod tests {
         let path = dir.path().join("multi_block.sst");
         let mut config = StorageConfig::default();
         config.block_size = 256; // Small blocks to force multiple blocks
+        let cache = create_test_cache(&config);
 
         // Write many records to span multiple blocks
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 789).unwrap();
@@ -412,7 +420,7 @@ mod tests {
         builder.finish().unwrap();
 
         // Read and verify all records
-        let mut reader = SstableReader::open(path, config).unwrap();
+        let mut reader = SstableReader::open(path, config, cache).unwrap();
         for i in 0..50 {
             let key = format!("key_{:03}", i);
             let record = reader.get(&key).unwrap();
@@ -425,6 +433,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("boundary.sst");
         let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
 
         // Write records with boundary keys
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 111).unwrap();
@@ -439,7 +448,7 @@ mod tests {
             .unwrap();
         builder.finish().unwrap();
 
-        let mut reader = SstableReader::open(path, config).unwrap();
+        let mut reader = SstableReader::open(path, config, cache).unwrap();
 
         // Test exact boundary keys
         assert!(
@@ -483,6 +492,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("scan_test.sst");
         let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
 
         // Write ordered records
         let mut builder = SstableBuilder::new(path.clone(), config.clone(), 999).unwrap();
@@ -499,7 +509,7 @@ mod tests {
         builder.finish().unwrap();
 
         // Scan all records
-        let mut reader = SstableReader::open(path, config).unwrap();
+        let mut reader = SstableReader::open(path, config, cache).unwrap();
         let records = reader.scan().unwrap();
 
         assert_eq!(records.len(), test_keys.len(), "Should scan all records");
@@ -509,17 +519,62 @@ mod tests {
     fn test_reader_invalid_magic() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("invalid.sst");
+        let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
 
         // Write file with wrong magic number
         std::fs::write(&path, b"INVALID_MAGIC").unwrap();
 
-        let config = StorageConfig::default();
-        let result = SstableReader::open(path, config);
+        let result = SstableReader::open(path, config, cache);
 
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
             LsmError::InvalidSstableFormat(_)
         ));
+    }
+
+    #[test]
+    fn test_shared_cache_across_readers() {
+        let dir = tempdir().unwrap();
+        let config = StorageConfig::default();
+        let cache = create_test_cache(&config);
+
+        // Create two SSTable files
+        let path1 = dir.path().join("file1.sst");
+        let path2 = dir.path().join("file2.sst");
+
+        // Write first SSTable
+        let mut builder1 = SstableBuilder::new(path1.clone(), config.clone(), 111).unwrap();
+        builder1
+            .add(b"key1", &create_test_record("key1", b"value1"))
+            .unwrap();
+        builder1.finish().unwrap();
+
+        // Write second SSTable
+        let mut builder2 = SstableBuilder::new(path2.clone(), config.clone(), 222).unwrap();
+        builder2
+            .add(b"key2", &create_test_record("key2", b"value2"))
+            .unwrap();
+        builder2.finish().unwrap();
+
+        // Open both readers with same cache
+        let mut reader1 = SstableReader::open(path1, config.clone(), Arc::clone(&cache)).unwrap();
+        let mut reader2 = SstableReader::open(path2, config, Arc::clone(&cache)).unwrap();
+
+        let stats_before = cache.stats();
+
+        // Read from first SSTable (populates cache)
+        reader1.get("key1").unwrap();
+        let stats_after1 = cache.stats();
+        assert!(stats_after1.len >= stats_before.len);
+
+        // Read from second SSTable (uses same cache)
+        reader2.get("key2").unwrap();
+        let stats_after2 = cache.stats();
+        assert!(stats_after2.len >= stats_after1.len);
+
+        // Both readers share the same cache
+        assert!(stats_after2.len <= stats_after2.cap);
     }
 }
