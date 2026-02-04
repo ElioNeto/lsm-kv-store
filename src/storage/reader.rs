@@ -308,32 +308,6 @@ impl SstableReader {
         let capacity = (cache_size_bytes / avg_block_size).max(1);
         NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap())
     }
-
-    fn reconstruct_bloom_filter(data: &[u8]) -> Result<Bloom<[u8]>> {
-        // The bloom filter data should contain: [bitmap_size (8 bytes)][items_count (8 bytes)][seed (32 bytes)][bitmap data...]
-        if data.len() < 48 {
-            return Err(LsmError::CorruptedData(
-                "Invalid bloom filter data".to_string(),
-            ));
-        }
-
-        let bitmap_size = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-        ]) as usize;
-
-        let items_count = u64::from_le_bytes([
-            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
-        ]) as usize;
-
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&data[16..48]);
-
-        let bloom = Bloom::<[u8]>::new_with_seed(bitmap_size, items_count, &seed).map_err(|e| {
-            LsmError::CompactionFailed(format!("Bloom filter reconstruction failed: {}", e))
-        })?;
-
-        Ok(bloom)
-    }
 }
 
 #[cfg(test)]
